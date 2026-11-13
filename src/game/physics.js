@@ -5,8 +5,8 @@
 // Criterios:
 // - Solo el personaje es DINÁMICO (masa > 0). Todo lo demás es ESTÁTICO (masa 0):
 //   no se mueve, no consume cálculo de integración y solo participa en colisiones.
-// - Formas simples: esferas (personaje, troncos y rocas), cajas (aserradero y límites)
-//   y un Heightfield para el suelo.
+// - Formas simples: esferas (personaje, troncos y rocas), cajas (aserradero, troncos caídos
+//   y límites) y un Heightfield para el suelo.
 // - SAPBroadphase: descarta rápidamente los pares de cuerpos lejanos, así el personaje
 //   solo se compara con los obstáculos cercanos aunque haya más de 150 cuerpos.
 import * as CANNON from 'cannon-es';
@@ -20,7 +20,7 @@ const TERRAIN_HALF = WORLD.playHalf + TERRAIN_STEP; // Cubre la zona jugable con
 
 /**
  * Crea el mundo físico a partir de los datos del bosque.
- * @param forest Resultado de createForest(): trees, rocks y sawmillColliders.
+ * @param forest Resultado de createForest(): trees, rocks, sawmillColliders y decorColliders.
  */
 export function createPhysics(forest) {
   const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.82, 0) });
@@ -91,6 +91,15 @@ export function createPhysics(forest) {
     sawmill.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)), new CANNON.Vec3(c.x, c.y, c.z));
   }
   world.addBody(sawmill);
+
+  // --- Troncos caídos: una caja estática orientada por tronco ---
+  for (const c of forest.decorColliders) {
+    const log = new CANNON.Body({ mass: 0, material: materials.obstacle });
+    log.position.set(c.x, c.y, c.z);
+    log.quaternion.setFromEuler(0, c.rotY, 0);
+    log.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)));
+    world.addBody(log);
+  }
 
   // --- Límites invisibles de la zona jugable (120 × 120): cuatro muros altos ---
   const H = WORLD.playHalf;

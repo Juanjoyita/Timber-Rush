@@ -6,8 +6,9 @@
 // OPTIMIZACIÓN aplicada en este archivo:
 // - Cada GLB se carga UNA vez y solo se reutiliza su geometría.
 // - UN único material para toda la naturaleza (colores en los vértices).
-// - InstancedMesh para lo decorativo y repetitivo: 1 draw call por modelo.
-// - Los árboles talables son mallas individuales porque tendrán estado propio (Fase 6).
+// - InstancedMesh para todos los árboles (talables y decorativos) y la vegetación:
+//   1 draw call por modelo. Cada árbol talable conserva su propio registro de datos y
+//   su instancia se puede ocultar por separado (cámara dentro de la copa, tala en la Fase 6).
 // - Rejilla espacial para comprobar distancias sin comparar todos contra todos.
 // - Objetos estáticos con matrixAutoUpdate = false.
 // - Terreno en dos mallas: detallada cerca y muy simple a lo lejos.
@@ -225,6 +226,90 @@ export async function loadForestModels(config) {
     })
   );
   return Object.fromEntries(entries);
+}
+
+// ---------- Árboles Low Poly propios (geometría de Three.js) ----------
+// Amplían la variedad de formas de los 6 modelos GLB. Cada árbol se construye con piezas
+// simples (cilindros, conos, icosaedros) que se FUSIONAN en una sola geometría con colores
+// de vértice: usa el mismo material de naturaleza y cuesta una sola llamada de dibujo.
+// Base en y = 0, eje Y hacia arriba (igual que los GLB).
+
+const TRUNK = 0x6b4c2d;
+
+/** Fusiona piezas [geometría, color] en una geometría no indexada con colores de vértice. */
+function mergeParts(parts) {
+  const positions = [];
+  const colors = [];
+  const c = new THREE.Color();
+  for (const [geo, hex] of parts) {
+    const g = geo.index ? geo.toNonIndexed() : geo;
+    c.set(hex); // sRGB → espacio de trabajo lineal (igual que los colores de los GLB)
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      positions.push(p.getX(i), p.getY(i), p.getZ(i));
+      colors.push(c.r, c.g, c.b);
+    }
+    geo.dispose();
+    if (g !== geo) g.dispose();
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  merged.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  merged.computeVertexNormals();
+  merged.computeBoundingBox();
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+const trunk = (rTop, rBottom, height) => new THREE.CylinderGeometry(rTop, rBottom, height, 6).translate(0, height / 2, 0);
+const cone = (radius, height, centerY) => new THREE.ConeGeometry(radius, height, 7).translate(0, centerY, 0);
+const blob = (radius, x, y, z, sy = 1) => new THREE.IcosahedronGeometry(radius, 0).scale(1, sy, 1).translate(x, y, z);
+
+let proceduralCache = null;
+
+/** Devuelve { nombre: geometría } de los árboles propios (se construyen una sola vez). */
+export function createProceduralTreeGeometries() {
+  if (proceduralCache) return proceduralCache;
+  proceduralCache = {
+    // Abeto alto: cuatro conos escalonados, verdes oscuros
+    proc_abeto: mergeParts([
+      [trunk(0.13, 0.2, 1.3), TRUNK],
+      [cone(1.35, 1.6, 1.9), 0x2f6b34],
+      [cone(1.1, 1.4, 2.55), 0x3b7f3c],
+      [cone(0.82, 1.2, 3.15), 0x2f6b34],
+      [cone(0.5, 1.0, 3.7), 0x3b7f3c],
+    ]),
+    // Pino joven: esbelto, tres conos estrechos
+    proc_pino_joven: mergeParts([
+      [trunk(0.09, 0.13, 1.0), TRUNK],
+      [cone(0.8, 1.3, 1.6), 0x4f9a43],
+      [cone(0.62, 1.1, 2.25), 0x5aa84a],
+      [cone(0.4, 0.9, 2.85), 0x4f9a43],
+    ]),
+    // Álamo: copa columnar, alta y estrecha
+    proc_alamo: mergeParts([
+      [trunk(0.11, 0.16, 1.2), TRUNK],
+      [blob(0.8, 0, 2.9, 0, 2.3), 0x6aa84f],
+      [blob(0.45, 0.1, 4.3, 0, 1.6), 0x78b85a],
+    ]),
+    // Roble: tronco grueso y copa ancha formada por varias masas
+    proc_roble: mergeParts([
+      [trunk(0.2, 0.3, 1.7), TRUNK],
+      [blob(1.15, 0, 2.9, 0), 0x3f8a3a],
+      [blob(0.85, 0.9, 2.6, 0.3), 0x4d9a45],
+      [blob(0.9, -0.8, 2.7, -0.4), 0x4d9a45],
+      [blob(0.75, 0.1, 3.6, 0.5), 0x3f8a3a],
+    ]),
+    // Abedul: tronco blanco con marcas oscuras y copa ligera
+    proc_abedul: mergeParts([
+      [trunk(0.1, 0.14, 2.4), 0xe8e4d8],
+      [new THREE.CylinderGeometry(0.118, 0.118, 0.06, 6).translate(0, 0.7, 0), 0x3a3a35],
+      [new THREE.CylinderGeometry(0.11, 0.11, 0.05, 6).translate(0, 1.5, 0), 0x3a3a35],
+      [blob(0.75, 0, 2.8, 0, 1.2), 0x8cc152],
+      [blob(0.55, 0.35, 3.5, 0.1), 0x9bcf5e],
+    ]),
+  };
+  return proceduralCache;
 }
 
 // ---------- Materiales y mallas ----------
@@ -523,14 +608,71 @@ function isReserved(x, z, radius, kind, clearings) {
   );
 }
 
+// ---------- Visibilidad de árboles instanciados ----------
+// Cada árbol (talable o decorativo) es una instancia de un InstancedMesh. Para ocultar uno
+// se sustituye su matriz por una de escala 0 y se marca el buffer para subirlo a la GPU.
+// Un árbol puede estar oculto por varios motivos a la vez (bits): solo se ve si no hay ninguno.
+export const HIDE_REASON = { CAMERA: 1, FELLED: 2 }; // FELLED se usará en la Fase 6
+const HIDDEN_MATRIX = new THREE.Matrix4().makeScale(0, 0, 0);
+const CAMERA_MARGIN = 0.6; // Distancia extra alrededor de la copa (m)
+
+function createTreeVisibility(entries) {
+  const dirty = new Set();
+  const apply = (entry) => {
+    entry.mesh.setMatrixAt(entry.index, entry.hidden ? HIDDEN_MATRIX : entry.matrix);
+    dirty.add(entry.mesh);
+  };
+  const flush = () => {
+    for (const m of dirty) m.instanceMatrix.needsUpdate = true;
+    dirty.clear();
+  };
+  return {
+    /** Oculta o muestra un árbol por un motivo concreto (HIDE_REASON). */
+    setHidden(entry, reason, hidden) {
+      const before = entry.hidden;
+      entry.hidden = hidden ? entry.hidden | reason : entry.hidden & ~reason;
+      if ((before === 0) !== (entry.hidden === 0)) apply(entry);
+      flush();
+    },
+    /**
+     * Oculta los árboles que tienen la cámara dentro de su copa o pegada a ella.
+     * Sin esto, en un bosque denso la cámara en tercera persona atraviesa las copas y los
+     * árboles se ven "cortados" (caras interiores invisibles y tronco recortado por el plano
+     * cercano). Son ~660 comprobaciones de distancia por fotograma: un coste mínimo.
+     */
+    updateCameraOcclusion(camera) {
+      const { x, y, z } = camera;
+      for (const e of entries) {
+        const dx = x - e.x, dz = z - e.z;
+        const inside = dx * dx + dz * dz < e.reach * e.reach && y < e.top + CAMERA_MARGIN && y > e.base - 1;
+        const wasHidden = (e.hidden & HIDE_REASON.CAMERA) !== 0;
+        if (inside === wasHidden) continue;
+        const before = e.hidden;
+        e.hidden = inside ? e.hidden | HIDE_REASON.CAMERA : e.hidden & ~HIDE_REASON.CAMERA;
+        if ((before === 0) !== (e.hidden === 0)) apply(e);
+      }
+      flush();
+    },
+  };
+}
+
+/** Datos de visibilidad de una instancia de árbol: posición, copa y altura. */
+function treeEntry(geometry, matrix, x, base, z, width, height) {
+  const bb = geometry.boundingBox;
+  const canopy = Math.max(-bb.min.x, bb.max.x, -bb.min.z, bb.max.z) * width;
+  return { matrix, x, z, base, top: base + bb.max.y * height, reach: canopy + CAMERA_MARGIN, mesh: null, index: -1, hidden: 0 };
+}
+
 // ---------- API pública ----------
 
 /**
  * Construye el bosque con las geometrías ya cargadas.
- * @returns {{ group, trees, rocks, bushes, clearings, sawmillColliders, setLogPile, logSlots, materials }}
+ * @returns {{ group, trees, rocks, bushes, clearings, updateCameraOcclusion, setTreeHidden, sawmillColliders, decorColliders, setLogPile, logSlots, materials }}
  *   trees, rocks y bushes guardan los datos para colisiones (Fase 5) y tala (Fase 6).
  */
 export function createForest(config, geometries) {
+  // Se añaden los árboles propios a las geometrías cargadas de los GLB
+  geometries = { ...geometries, ...createProceduralTreeGeometries() };
   // Semillas separadas: cambiar la decoración no mueve los árboles talables
   const rand = createRandom(config.seed);
   const decoRand = createRandom(config.seed + 1);
@@ -552,36 +694,56 @@ export function createForest(config, geometries) {
   const spacing = new SpatialGrid(4);
   const obstacles = new SpatialGrid(4);
 
+  // Modelos de árbol: 6 GLB + 5 propios
+  const pineModels = [...models.pines, ...config.proceduralTrees.pines];
+  const roundModels = [...models.roundTrees, ...config.proceduralTrees.round];
+
   // --- Árboles talables: muestreo por densidad con distancia mínima (Poisson disk) ---
   // Se lanzan posiciones al azar; cada una se acepta con probabilidad = densidad local
   // y solo si respeta la distancia mínima. Resultado: arboledas densas, zonas abiertas
   // y nunca una cuadrícula.
   const trees = [];
+  const talableMatrices = new Map([...pineModels, ...roundModels].map((n) => [n, []]));
   const half = config.treeSpacing / 2;
-  for (let attempt = 0; trees.length < config.treeCount && attempt < 60000; attempt++) {
+  for (let attempt = 0; trees.length < config.treeCount && attempt < 100000; attempt++) {
     const x = range(rand, -H + 2, H - 2);
     const z = range(rand, -H + 2, H - 2);
     if (rand() > density(x, z)) continue;
     if (isReserved(x, z, 1.3, 'tree', clearings) || !spacing.isFree(x, z, half)) continue;
 
     const isPine = rand() < config.pineRatio;
-    const modelName = pick(rand, isPine ? models.pines : models.roundTrees);
-    const scale = range(rand, 0.85, 1.2);
-    const radius = 0.3 * scale; // Radio de colisión del tronco (Fase 5)
+    const modelName = pick(rand, isPine ? pineModels : roundModels);
+    // Proporciones independientes: altura y anchura propias de cada árbol
+    const height = range(rand, config.treeHeight[0], config.treeHeight[1]);
+    const width = range(rand, config.treeWidth[0], config.treeWidth[1]);
+    const radius = 0.3 * width; // Radio de colisión del tronco (Fase 5)
 
-    const tree = new THREE.Group();
-    tree.name = `arbol-${trees.length}`;
-    tree.add(mesh(geometries[modelName], mats.nature, { cast: true, receive: true }));
-    tree.position.set(x, heightAt(x, z) - 0.05, z); // Base apoyada (ligeramente enterrada)
-    tree.rotation.y = rand() * Math.PI * 2;
-    tree.scale.setScalar(scale);
-    tree.userData = { type: isPine ? 'pino' : 'redondo', model: modelName, radius, height: geometries[modelName].boundingBox.max.y * scale };
+    // Cada árbol es un registro de datos + una instancia del InstancedMesh de su modelo
+    const y = heightAt(x, z) - 0.05; // Base apoyada (ligeramente enterrada)
+    const rotationY = rand() * Math.PI * 2;
+    const matrix = makeMatrix(x, y, z, rotationY, width, height, width);
+    const tree = {
+      name: `arbol-${trees.length}`,
+      position: new THREE.Vector3(x, y, z),
+      rotationY,
+      scale: new THREE.Vector3(width, height, width),
+      userData: { type: isPine ? 'pino' : 'redondo', model: modelName, radius, height: geometries[modelName].boundingBox.max.y * height },
+      instance: treeEntry(geometries[modelName], matrix, x, y, z, width, height),
+    };
+    talableMatrices.get(modelName).push(matrix);
+    tree.instance.index = talableMatrices.get(modelName).length - 1;
 
     spacing.add(x, z, half);
     obstacles.add(x, z, radius);
     trees.push(tree);
-    group.add(tree);
   }
+  // Un InstancedMesh por modelo (11): de ~300 llamadas de dibujo a 11 (+11 en sombras)
+  const talableMeshes = new Map(
+    instancedByModel(talableMatrices, geometries, mats.nature, { cast: true, receive: true }).map((m) => [m.name, m])
+  );
+  for (const tree of trees) tree.instance.mesh = talableMeshes.get(tree.userData.model);
+  for (const m of talableMeshes.values()) m.name = `talables-${m.name}`; // Distinto de los decorativos
+  group.add(...talableMeshes.values());
 
   // --- Rocas: mallas individuales (colisión en la Fase 5) ---
   const rocks = [];
@@ -606,11 +768,46 @@ export function createForest(config, geometries) {
     group.add(rock);
   }
 
+  // --- Troncos caídos: decoración del suelo del bosque, con colisión ---
+  // InstancedMesh por modelo. Cada tronco genera una caja de colisión orientada como él
+  // (definida aquí, junto a la parte visual, para que siempre coincidan). Semilla propia:
+  // no altera la posición de los árboles ni de las rocas.
+  const logRand = createRandom(config.seed + 2);
+  const logMatrices = new Map(models.logs.map((n) => [n, []]));
+  const decorColliders = [];
+  for (let attempt = 0; decorColliders.length < config.fallenLogCount && attempt < 4000; attempt++) {
+    const x = range(logRand, -H + 4, H - 4);
+    const z = range(logRand, -H + 4, H - 4);
+    const name = pick(logRand, models.logs);
+    const bb = geometries[name].boundingBox;
+    const scale = range(logRand, 0.9, 1.25);
+    const alongX = bb.max.x - bb.min.x >= bb.max.z - bb.min.z; // Eje principal del modelo
+    const along = (alongX ? bb.max.x - bb.min.x : bb.max.z - bb.min.z) * scale; // Largo del tronco
+    if (isReserved(x, z, along / 2, 'rock', clearings) || !spacing.isFree(x, z, along / 2, 0.6)) continue;
+
+    const yaw = logRand() * Math.PI * 2;
+    const y = heightAt(x, z) - 0.05;
+    const height = bb.max.y * scale;
+    logMatrices.get(name).push(makeMatrix(x, y, z, yaw, scale));
+    // Caja: largo del tronco en su eje principal y ~0,6 m de grosor (sin contar las ramas)
+    decorColliders.push({
+      x, y: y + height / 2, z, rotY: yaw,
+      hx: alongX ? along / 2 : 0.3 * scale,
+      hy: height / 2,
+      hz: alongX ? 0.3 * scale : along / 2,
+    });
+    spacing.add(x, z, along / 2);
+    obstacles.add(x, z, along / 2);
+  }
+  group.add(...instancedByModel(logMatrices, geometries, mats.nature, { cast: true, receive: true }));
+
   // --- Árboles decorativos: franja de bosque exterior + algunos dispersos más lejos ---
   // InstancedMesh y sin sombras. Disimulan el límite de la zona jugable sin montañas.
   const decoGrid = new SpatialGrid(5);
-  const decorative = new Map([...models.pines, ...models.roundTrees].map((n) => [n, []]));
+  const livingTrees = [...pineModels, ...roundModels];
+  const decorative = new Map([...livingTrees, ...models.deadTrees].map((n) => [n, []]));
   let decoCount = 0;
+  const decoEntries = []; // Registro de cada instancia (para ocultarla si la cámara entra en su copa)
   const beltTarget = Math.round(config.decorativeTreeCount * 0.82);
   const placeDecorative = (limit, minHalf, maxHalf, minDist) => {
     for (let attempt = 0; decoCount < limit && attempt < 20000; attempt++) {
@@ -618,20 +815,29 @@ export function createForest(config, geometries) {
       const z = range(decoRand, -maxHalf, maxHalf);
       if (Math.max(Math.abs(x), Math.abs(z)) < minHalf) continue; // Solo fuera del cuadrado interior
       if (!decoGrid.isFree(x, z, minDist / 2)) continue;
-      const scale = range(decoRand, 0.9, 1.35);
-      decorative.get(pick(decoRand, [...decorative.keys()])).push(makeMatrix(x, heightAt(x, z) - 0.4, z, decoRand() * Math.PI * 2, scale));
+      const name = decoRand() < config.deadTreeRatio ? pick(decoRand, models.deadTrees) : pick(decoRand, livingTrees);
+      const h = range(decoRand, 0.9, 1.6), w = range(decoRand, 0.85, 1.3);
+      const y = heightAt(x, z) - 0.4;
+      const matrix = makeMatrix(x, y, z, decoRand() * Math.PI * 2, w, h, w);
+      const entry = treeEntry(geometries[name], matrix, x, y, z, w, h);
+      entry.model = name;
+      entry.index = decorative.get(name).length;
+      decorative.get(name).push(matrix);
+      decoEntries.push(entry);
       decoGrid.add(x, z, minDist / 2);
       decoCount++;
     }
   };
-  placeDecorative(beltTarget, H + 1.5, WORLD.innerHalf - 5, 3.4); // Franja densa junto al límite
-  placeDecorative(config.decorativeTreeCount, WORLD.innerHalf - 5, 170, 7); // Dispersos hacia el horizonte
-  group.add(...instancedByModel(decorative, geometries, mats.nature, { cast: false, receive: false }));
+  placeDecorative(beltTarget, H + 1.5, WORLD.innerHalf - 5, 2.9); // Franja densa junto al límite
+  placeDecorative(config.decorativeTreeCount, WORLD.innerHalf - 5, 170, 5.5); // Dispersos hacia el horizonte
+  const decoMeshes = new Map(instancedByModel(decorative, geometries, mats.nature, { cast: false, receive: false }).map((m) => [m.name, m]));
+  for (const e of decoEntries) e.mesh = decoMeshes.get(e.model);
+  group.add(...decoMeshes.values());
 
   // --- Arbustos: InstancedMesh con sombra (son voluminosos); preferentemente en los bordes de las arboledas ---
   const bushMatrices = new Map(models.bushes.map((n) => [n, []]));
   const bushes = [];
-  for (let attempt = 0; bushes.length < config.bushCount && attempt < 8000; attempt++) {
+  for (let attempt = 0; bushes.length < config.bushCount && attempt < 20000; attempt++) {
     const x = range(decoRand, -H + 2, H - 2);
     const z = range(decoRand, -H + 2, H - 2);
     const d = density(x, z);
@@ -649,7 +855,7 @@ export function createForest(config, geometries) {
   // Las flores abundan más en las praderas abiertas; la hierba en todas partes.
   const plants = new Map([...models.grass, ...models.flowers].map((n) => [n, []]));
   let placed = 0;
-  for (let cluster = 0; placed < config.smallPlantCount && cluster < 200; cluster++) {
+  for (let cluster = 0; placed < config.smallPlantCount && cluster < 800; cluster++) {
     const cx = range(decoRand, -H + 1, H - 1);
     const cz = range(decoRand, -H + 1, H - 1);
     const groupSize = 3 + Math.floor(decoRand() * 6); // 3-8 plantas por grupo
@@ -673,9 +879,15 @@ export function createForest(config, geometries) {
     obj.matrixAutoUpdate = false;
   });
 
+  // Visibilidad de todos los árboles instanciados (talables + decorativos)
+  const visibility = createTreeVisibility([...trees.map((t) => t.instance), ...decoEntries]);
+
   return {
     group, trees, rocks, bushes, clearings,
+    updateCameraOcclusion: visibility.updateCameraOcclusion, // Llamar cada fotograma con la posición de la cámara
+    setTreeHidden: (tree, reason, hidden) => visibility.setHidden(tree.instance, reason, hidden),
     sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
+    decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
   };
 }

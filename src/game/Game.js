@@ -14,7 +14,14 @@ const SHADOW_MAP = 2048;
 const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
 
 // Cámara en tercera persona
-const CAMERA_HEIGHT = 1.5; // Punto de mira: a la altura de los hombros del personaje (1,83 m)
+// Encuadre (medido en 200 posiciones del bosque): con el punto de mira a la altura de los
+// hombros y la cámara inclinada hacia el suelo, las copas de los árboles cercanos (hasta 7 m)
+// quedaban fuera del plano y se veían troncos "cortados" (8 %, y 33 % con zoom). Mirando por
+// encima de la cabeza, con una vista más horizontal y algo más de campo de visión: 0 % (2 % con
+// zoom), y el personaje sigue viéndose entero.
+const CAMERA_HEIGHT = 2.5; // Punto de mira: por encima de la cabeza del personaje (1,83 m)
+const CAMERA_FOV = 65;
+const CAMERA_START = { distance: 9, rise: 1.2 }; // Posición inicial: detrás y algo por encima del punto de mira
 const CAMERA_FOLLOW = 8; // Rapidez con que la cámara alcanza al personaje (mayor = más rígida)
 const CAMERA_MIN_GROUND = 0.5; // La cámara nunca baja de 0,5 m sobre el terreno
 const MAX_DELTA = 0.1; // Si la pestaña estuvo oculta, no se simula un salto de tiempo enorme
@@ -36,7 +43,7 @@ export class Game {
     // ---------- Cámara ----------
     // PerspectiveCamera(fov, aspecto, near, far). "far" algo mayor que el final
     // de la niebla: lo que está más lejos no se vería y no se dibuja.
-    this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, forestConfig.fog.far + 20);
+    this.camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, 0.1, forestConfig.fog.far + 20);
 
     // ---------- Renderer ----------
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -54,7 +61,7 @@ export class Game {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true; // Giro suave
     this.controls.enablePan = false; // El desplazamiento lo hace el personaje, no la cámara
-    this.controls.minDistance = 3;
+    this.controls.minDistance = 4; // Más cerca, las copas de los árboles cercanos no caben en el plano
     this.controls.maxDistance = 15;
     this.controls.minPolarAngle = 0.2; // Ni completamente cenital…
     this.controls.maxPolarAngle = Math.PI / 2.05; // …ni por debajo del horizonte
@@ -134,7 +141,8 @@ export class Game {
 
     // Cámara inicial: detrás del personaje y algo elevada
     const target = this.controls.target.set(x, this.player.position.y + CAMERA_HEIGHT, z);
-    this.camera.position.set(target.x - Math.sin(yaw) * 7, target.y + 3.5, target.z - Math.cos(yaw) * 7);
+    const { distance, rise } = CAMERA_START;
+    this.camera.position.set(target.x - Math.sin(yaw) * distance, target.y + rise, target.z - Math.cos(yaw) * distance);
 
     // Medición: tras unos fotogramas mostramos en consola el coste real de un fotograma
     // desde la vista actual (incluye el pase de sombras). Solo informativo.
@@ -192,6 +200,9 @@ export class Game {
     // La cámara no atraviesa el suelo (el terreno es ondulado)
     const minY = heightAt(this.camera.position.x, this.camera.position.z) + CAMERA_MIN_GROUND;
     if (this.camera.position.y < minY) this.camera.position.y = minY;
+
+    // Los árboles con la cámara dentro de su copa se ocultan (si no, se ven "cortados")
+    if (this.forest) this.forest.updateCameraOcclusion(this.camera.position);
 
     this.updateShadowArea(this.controls.target);
     this.renderer.render(this.scene, this.camera);
