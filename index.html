@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Timber Rush 3D</title>
+  </head>
+  <body>
+    <!-- Contenedor donde Three.js insertará el <canvas> del juego -->
+    <div id="game-container"></div>
+
+    <!-- ===== Pantalla de carga (mientras se comprueba la sesión) ===== -->
+    <section id="screen-loading" class="screen">
+      <div class="panel">
+        <h1 class="logo">Timber Rush <span>3D</span></h1>
+        <p class="muted">Comprobando sesión…</p>
+      </div>
+    </section>
+
+    <!-- ===== Pantalla 1: Registro e inicio de sesión ===== -->
+    <section id="screen-auth" class="screen hidden">
+      <div class="panel">
+        <h1 class="logo">Timber Rush <span>3D</span></h1>
+
+        <div id="auth-tabs" class="tabs">
+          <button type="button" id="tab-login" class="tab active">Iniciar sesión</button>
+          <button type="button" id="tab-register" class="tab">Registrarse</button>
+        </div>
+
+        <!-- Inicio de sesión: correo + contraseña -->
+        <form id="form-login" class="form">
+          <label>Correo electrónico
+            <input id="login-email" type="email" autocomplete="email" required />
+          </label>
+          <label>Contraseña
+            <input id="login-password" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Entrar</button>
+        </form>
+
+        <!-- Registro: nombre único + correo + contraseña -->
+        <form id="form-register" class="form hidden">
+          <label>Nombre de usuario
+            <input id="register-username" type="text" autocomplete="username"
+                   minlength="3" maxlength="20" pattern="[A-Za-z0-9_]+" required />
+          </label>
+          <label>Correo electrónico
+            <input id="register-email" type="email" autocomplete="email" required />
+          </label>
+          <label>Contraseña (mínimo 8 caracteres)
+            <input id="register-password" type="password" autocomplete="new-password" minlength="8" required />
+          </label>
+          <label>Repetir contraseña
+            <input id="register-password2" type="password" autocomplete="new-password" minlength="8" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Crear cuenta</button>
+        </form>
+
+        <!-- Elegir nombre: cuando la cuenta existe pero aún no tiene perfil -->
+        <form id="form-username" class="form hidden">
+          <p class="muted">Elige un nombre de usuario para completar tu cuenta.</p>
+          <label>Nombre de usuario
+            <input id="choose-username" type="text" minlength="3" maxlength="20"
+                   pattern="[A-Za-z0-9_]+" required />
+          </label>
+          <button type="submit" class="btn btn-primary">Confirmar nombre</button>
+          <button type="button" id="btn-username-logout" class="btn btn-secondary">Cerrar sesión</button>
+        </form>
+
+        <p id="auth-message" class="message hidden" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- ===== Pantalla 2: Menú principal ===== -->
+    <section id="screen-menu" class="screen hidden">
+      <div class="panel">
+        <h1 class="logo">Timber Rush <span>3D</span></h1>
+        <p>¡Hola, <strong id="menu-username"></strong>!</p>
+
+        <!-- Resumen del progreso (datos de la fila de Appwrite) -->
+        <div class="stats">
+          <div class="stat">
+            <span class="stat-value" id="menu-coins">0</span>
+            <span class="stat-label">Monedas</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="menu-total">0</span>
+            <span class="stat-label">Total ganado</span>
+          </div>
+          <div class="stat">
+            <span class="stat-value" id="menu-forests">1/5</span>
+            <span class="stat-label">Bosques</span>
+          </div>
+        </div>
+
+        <button type="button" id="btn-play" class="btn btn-primary btn-large">Jugar</button>
+
+        <!-- Recordatorio de controles -->
+        <ul class="controls">
+          <li><kbd>WASD</kbd> Moverse</li>
+          <li><kbd>Ratón</kbd> Cámara</li>
+          <li><kbd>E</kbd> Cortar</li>
+          <li><kbd>F</kbd> Vender</li>
+          <li><kbd>B</kbd> Tienda</li>
+          <li><kbd>ESC</kbd> Pausa</li>
+        </ul>
+
+        <button type="button" id="btn-logout" class="btn btn-secondary">Cerrar sesión</button>
+        <p id="menu-message" class="message hidden" role="alert"></p>
+      </div>
+    </section>
+
+    <!-- ===== Pantalla 3: Juego 3D (el HUD se construye en fases posteriores) ===== -->
+    <section id="screen-game" class="screen screen-game hidden">
+      <div class="game-topbar">
+        <!-- Botón provisional para volver al menú hasta que exista la pausa (ESC) -->
+        <button type="button" id="btn-back-menu" class="btn btn-secondary btn-small">Menú</button>
+      </div>
+    </section>
+
+    <!-- Vite procesa este módulo ES6 y resuelve los imports de node_modules -->
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

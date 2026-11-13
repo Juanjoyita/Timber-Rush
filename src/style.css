@@ -1,0 +1,269 @@
+/* ===== Paleta forestal del proyecto (se reutiliza en todas las pantallas) ===== */
+:root {
+  --verde-oscuro: #2f4a2c;
+  --verde: #4f7a3a;
+  --verde-claro: #6fae4f;
+  --marron: #6b4423;
+  --marron-claro: #8a5a33;
+  --dorado: #e0b43a;
+  --dorado-oscuro: #b88d1f;
+  --crema: #f5ecd7;
+  --rojo: #b3432f;
+  --radio: 14px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden; /* El canvas ocupa toda la ventana, sin barras de desplazamiento */
+  background: var(--verde-oscuro);
+  font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+  color: var(--crema);
+}
+
+#game-container {
+  position: fixed;
+  inset: 0;
+}
+
+/* El canvas se muestra como bloque para evitar el pequeño hueco inferior de los elementos inline */
+#game-container canvas {
+  display: block;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* ===== Pantallas: capa sobre el canvas, centrada ===== */
+.screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(20, 35, 18, 0.45); /* Oscurece la escena de fondo */
+}
+
+.panel {
+  width: 100%;
+  max-width: 400px;
+  max-height: 100%;
+  overflow-y: auto; /* En pantallas bajas el panel se desplaza en vez de cortarse */
+  padding: 28px 24px;
+  border-radius: var(--radio);
+  background: rgba(47, 74, 44, 0.95);
+  border: 3px solid var(--marron);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: center;
+}
+
+.logo {
+  font-size: 2rem;
+  letter-spacing: 0.5px;
+  color: var(--crema);
+}
+
+.logo span {
+  color: var(--dorado);
+}
+
+.muted {
+  color: #cfd8c4;
+  font-size: 0.95rem;
+}
+
+/* ===== Pestañas login / registro ===== */
+.tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: var(--radio);
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.tab {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--crema);
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+
+.tab.active {
+  background: var(--marron);
+  font-weight: 600;
+}
+
+/* ===== Formularios ===== */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+
+.form label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.9rem;
+}
+
+.form input {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 2px solid var(--marron-claro);
+  background: var(--crema);
+  color: #2b2b2b;
+  font-size: 1rem;
+}
+
+.form input:focus {
+  outline: none;
+  border-color: var(--dorado);
+}
+
+/* ===== Botones ===== */
+.btn {
+  padding: 11px 16px;
+  border-radius: 10px;
+  border: none;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.1s, filter 0.1s;
+}
+
+.btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--dorado);
+  color: #3a2a0a;
+  border-bottom: 3px solid var(--dorado-oscuro);
+}
+
+.btn-secondary {
+  background: var(--marron);
+  color: var(--crema);
+  border-bottom: 3px solid #4a2f18;
+}
+
+.btn-large {
+  padding: 14px 16px;
+  font-size: 1.2rem;
+}
+
+.btn-small {
+  padding: 7px 14px;
+  font-size: 0.9rem;
+}
+
+/* ===== Menú principal: resumen del progreso ===== */
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 4px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--marron-claro);
+}
+
+.stat-value {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--dorado);
+  overflow-wrap: anywhere; /* Cifras grandes no desbordan en pantallas estrechas */
+}
+
+.stat-label {
+  font-size: 0.75rem;
+  color: #cfd8c4;
+}
+
+/* ===== Menú principal: controles ===== */
+.controls {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px 12px;
+  text-align: left;
+  font-size: 0.85rem;
+  color: #cfd8c4;
+}
+
+kbd {
+  display: inline-block;
+  min-width: 2.2em;
+  margin-right: 6px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--crema);
+  color: var(--marron);
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-align: center;
+  border-bottom: 2px solid var(--marron-claro);
+}
+
+/* ===== Pantalla de juego: transparente para ver e interactuar con la escena ===== */
+.screen-game {
+  background: none;
+  align-items: flex-start;
+  justify-content: flex-end;
+  pointer-events: none; /* Los clics atraviesan la capa y llegan a OrbitControls */
+}
+
+.game-topbar {
+  pointer-events: auto; /* Solo la barra superior recibe clics */
+}
+
+/* ===== Mensajes de estado ===== */
+.message {
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+}
+
+.message.error {
+  background: rgba(179, 67, 47, 0.25);
+  border: 1px solid var(--rojo);
+}
+
+.message.success {
+  background: rgba(111, 174, 79, 0.25);
+  border: 1px solid var(--verde-claro);
+}

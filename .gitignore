@@ -1,0 +1,13 @@
+# Dependencias (se reinstalan con "npm install")
+node_modules/
+
+# Build generado por "npm run build"
+dist/
+
+# Configuración local de Appwrite (usar .env.example como plantilla)
+.env
+.env.local
+*.local
+
+# Archivos del sistema
+.DS_Store

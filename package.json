@@ -1,0 +1,20 @@
+{
+  "name": "timber-rush-3d",
+  "version": "0.1.0",
+  "description": "Timber Rush 3D - videojuego incremental 3D de tala de árboles (Three.js + Cannon-es + Appwrite)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "appwrite": "^29.2.0",
+    "cannon-es": "^0.20.0",
+    "three": "^0.187.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.8"
+  }
+}
