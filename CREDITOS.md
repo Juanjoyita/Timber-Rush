@@ -15,10 +15,26 @@
   les asigna un `MeshStandardMaterial` propio con colores de vértice, convierte esos
   colores de sRGB a espacio lineal y calcula normales. Los archivos originales no se modifican.
 
-### Personaje (leñador)
+### Ultimate Modular Men Pack (personaje Worker)
+- **Autor:** Quaternius
+- **Fuente:** https://quaternius.com/packs/ultimatemodularcharacters.html
+- **Licencia:** CC0 1.0 (dominio público). Verificada en la página oficial del paquete y en
+  https://quaternius.com/faq.html (la descarga no incluye archivo de licencia).
+- **Uso previsto:** `Worker` como personaje base, con sus animaciones Idle, Walk y Run.
+  Los 11 personajes comparten el esqueleto `CharacterArmature`, lo que permite
+  intercambiar piezas de ropa en el futuro.
+
+### Universal Animation Library 2 — Standard
+- **Autor:** Quaternius
+- **Fuente:** https://quaternius.com/packs/universalanimationlibrary2.html
+- **Licencia:** CC0 1.0 (dominio público). Verificada en el `License.txt` incluido en la descarga.
+- **Uso previsto:** animación `TreeChopping_Loop` (archivo sin root motion `UAL2_Standard.glb`),
+  adaptada con Blender al esqueleto del Worker (retargeting previo, no en tiempo de ejecución).
+
+### Personaje provisional (leñador actual)
 - **Autor:** Quaternius
 - **Archivo:** `public/assets/models/lumberjack.glb`
-- **Fuente y licencia:** pendiente de registrar por el director del proyecto.
+- **Estado:** se sustituirá por el Worker. Fuente exacta pendiente de registrar.
 
 ## Bibliotecas
 - Three.js (MIT) · cannon-es (MIT) · Appwrite Web SDK (BSD-3-Clause) · Vite (MIT)

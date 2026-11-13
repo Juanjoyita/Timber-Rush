@@ -368,6 +368,8 @@ function createTerrain(colors, density, rand, material) {
 // ---------- Aserradero ----------
 // Coordenadas locales: el cobertizo ocupa x[-4, 4] z[-3, 3]; el almacén z[4, 8.6];
 // la plataforma de venta está delante (x ≈ 7). El frente abierto mira hacia +X (el camino).
+// Las piezas marcadas como "solid" generan también una caja de colisión (Fase 5),
+// así la parte visual y la física se definen en el mismo sitio y siempre coinciden.
 
 function createSawmill(geometries, logNames, mats) {
   const group = new THREE.Group();
@@ -376,38 +378,47 @@ function createSawmill(geometries, logNames, mats) {
 
   // Las piezas se agrupan por material y se dibujan con un InstancedMesh por grupo
   const batches = { dark: [], light: [], roof: [], gold: [] };
-  const box = (batch, sx, sy, sz, x, y, z, rotX = 0) => batches[batch].push(makeMatrix(x, y, z, 0, sx, sy, sz, rotX));
+  // Cajas de colisión en coordenadas del MUNDO: { x, y, z } centro y { hx, hy, hz } semiejes
+  const colliders = [];
+  const addCollider = (sx, sy, sz, x, y, z) =>
+    colliders.push({ x: SM.x + x, y, z: SM.z + z, hx: sx / 2, hy: sy / 2, hz: sz / 2 });
+  const box = (batch, sx, sy, sz, x, y, z, { rotX = 0, solid = false } = {}) => {
+    batches[batch].push(makeMatrix(x, y, z, 0, sx, sy, sz, rotX));
+    if (solid) addCollider(sx, sy, sz, x, y, z);
+  };
+  const solid = { solid: true };
 
   // --- Cobertizo abierto ---
-  box('light', 8, 0.3, 6, 0, 0.15, 0); // Suelo
+  // Suelo de 0,15 m: el personaje puede subir a él caminando (como a la plataforma de venta)
+  box('light', 8, 0.15, 6, 0, 0.075, 0, solid);
   for (const x of [-3.8, 0, 3.8]) {
-    for (const z of [-2.8, 2.8]) box('dark', 0.3, 3.2, 0.3, x, 1.9, z); // Postes
+    for (const z of [-2.8, 2.8]) box('dark', 0.3, 3.35, 0.3, x, 1.825, z, solid); // Postes
   }
   box('dark', 8, 0.25, 0.3, 0, 3.55, 2.8); // Vigas
   box('dark', 8, 0.25, 0.3, 0, 3.55, -2.8);
   box('dark', 8.8, 0.25, 0.25, 0, 5.1, 0); // Cumbrera
-  box('roof', 8.8, 0.2, 3.4, 0, 4.32, 1.49, 0.5); // Tejado rojo a dos aguas
-  box('roof', 8.8, 0.2, 3.4, 0, 4.32, -1.49, -0.5);
-  box('light', 0.25, 1.4, 5.6, -3.9, 1.0, 0); // Murete trasero (el resto queda abierto)
+  box('roof', 8.8, 0.2, 3.4, 0, 4.32, 1.49, { rotX: 0.5 }); // Tejado rojo a dos aguas
+  box('roof', 8.8, 0.2, 3.4, 0, 4.32, -1.49, { rotX: -0.5 });
+  box('light', 0.25, 1.4, 5.6, -3.9, 0.85, 0, solid); // Murete trasero (el resto queda abierto)
 
   // --- Zona de procesado: mesa con disco de sierra y un tronco preparado ---
-  box('light', 1.4, 0.9, 3.4, 0.8, 0.75, 0);
+  box('light', 1.4, 0.9, 3.4, 0.8, 0.6, 0, solid);
   const blade = mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.06, 14).rotateZ(Math.PI / 2), mats.metal);
-  blade.position.set(0.8, 1.3, -0.7);
+  blade.position.set(0.8, 1.15, -0.7);
   const tableLog = mesh(geometries[logNames[1]], mats.nature);
-  tableLog.position.set(0.8, 1.2, 0.8);
+  tableLog.position.set(0.8, 1.05, 0.8);
   group.add(blade, tableLog);
 
   // --- Almacén delimitado por una valla (entrada libre en el lado +X, de z=4 a z=6.3) ---
-  const fencePost = (x, z) => box('dark', 0.18, 1.1, 0.18, x, 0.55, z);
+  const fencePost = (x, z) => box('dark', 0.18, 1.1, 0.18, x, 0.55, z, solid);
   // Contadores enteros: sumar decimales acumularía error de redondeo y podría saltarse un poste
   for (let i = 0; i <= 4; i++) fencePost(-3.5, 4 + i * 1.15);
   for (let i = 1; i <= 4; i++) fencePost(-3.5 + i * 1.75, 8.6);
   for (const z of [6.3, 7.45]) fencePost(3.5, z);
   for (const y of [0.45, 0.85]) {
-    box('dark', 0.08, 0.1, 4.6, -3.5, y, 6.3); // Travesaños
-    box('dark', 7.0, 0.1, 0.08, 0, y, 8.6);
-    box('dark', 0.08, 0.1, 2.3, 3.5, y, 7.45);
+    box('dark', 0.08, 0.1, 4.6, -3.5, y, 6.3, solid); // Travesaños
+    box('dark', 7.0, 0.1, 0.08, 0, y, 8.6, solid);
+    box('dark', 0.08, 0.1, 2.3, 3.5, y, 7.45, solid);
   }
 
   // --- Pila de troncos (log_01 y log_02) preparada para actualizarse ---
@@ -430,14 +441,17 @@ function createSawmill(geometries, logNames, mats) {
   const logPiles = logNames.map((name, k) =>
     instanced(geometries[name], mats.nature, logMatrices[k], { cast: true, receive: true, name: 'pila-troncos' })
   );
+  // Una sola caja de colisión invisible envuelve las dos pilas
+  addCollider(4.8, 1.9, 3.0, -0.35, 0.95, 5.9);
 
   // --- Plataforma de venta (solo visual; el trigger AABB llega en la Fase 7) ---
   box('light', 3.6, 0.12, 3.6, 7, 0.06, -1.5);
+  addCollider(3.8, 0.12, 3.8, 7, 0.06, -1.5); // La colisión incluye el ribete: se sube caminando
   box('gold', 3.8, 0.16, 0.15, 7, 0.08, -3.35); // Ribete dorado
   box('gold', 3.8, 0.16, 0.15, 7, 0.08, 0.35);
   box('gold', 0.15, 0.16, 3.8, 5.15, 0.08, -1.5);
   box('gold', 0.15, 0.16, 3.8, 8.85, 0.08, -1.5);
-  box('dark', 0.15, 2.4, 0.15, 8.95, 1.2, 0.45); // Poste del farol
+  box('dark', 0.15, 2.4, 0.15, 8.95, 1.2, 0.45, solid); // Poste del farol
 
   // Farol: PointLight cálida que señala la zona de venta. Sin sombras y alcance corto.
   const lantern = mesh(boxGeo, mats.lantern, { cast: false });
@@ -466,7 +480,7 @@ function createSawmill(geometries, logNames, mats) {
     logPiles[1].count = Math.floor(n / 2); // Huecos impares
   };
 
-  return { group, setLogPile, logSlots: slots.length };
+  return { group, setLogPile, logSlots: slots.length, colliders };
 }
 
 // ---------- Zonas reservadas ----------
@@ -513,7 +527,7 @@ function isReserved(x, z, radius, kind, clearings) {
 
 /**
  * Construye el bosque con las geometrías ya cargadas.
- * @returns {{ group, trees, rocks, bushes, clearings, setLogPile, logSlots, materials }}
+ * @returns {{ group, trees, rocks, bushes, clearings, sawmillColliders, setLogPile, logSlots, materials }}
  *   trees, rocks y bushes guardan los datos para colisiones (Fase 5) y tala (Fase 6).
  */
 export function createForest(config, geometries) {
@@ -659,5 +673,9 @@ export function createForest(config, geometries) {
     obj.matrixAutoUpdate = false;
   });
 
-  return { group, trees, rocks, bushes, clearings, setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats };
+  return {
+    group, trees, rocks, bushes, clearings,
+    sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
+    setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
+  };
 }

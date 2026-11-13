@@ -1,16 +1,23 @@
 // Game.js — Escena, renderer, cámara, luces y bucle principal.
-// FASE 4: carga los modelos GLB y construye el Bosque Verde (forest.js).
+// FASE 5: personaje con física (cannon-es) y cámara en tercera persona.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { FORESTS } from '../config.js';
-import { createForest, loadForestModels, WORLD } from './forest.js';
+import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, WORLD } from './forest.js';
+import { createPhysics, FIXED_STEP } from './physics.js';
+import { Player } from './Player.js';
 
-// Sombras: el área cubre solo los alrededores del punto que mira la cámara
-// (en la Fase 5, el personaje). Así un mapa de 2048 px da sombras nítidas
-// y el pase de sombras solo dibuja los objetos cercanos.
+// Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
+// 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
 const SHADOW_HALF = 32; // Área de sombras: 64 × 64 m
 const SHADOW_MAP = 2048;
 const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
+
+// Cámara en tercera persona
+const CAMERA_HEIGHT = 1.2; // Punto de mira: a la altura del pecho del personaje (m)
+const CAMERA_FOLLOW = 8; // Rapidez con que la cámara alcanza al personaje (mayor = más rígida)
+const CAMERA_MIN_GROUND = 0.5; // La cámara nunca baja de 0,5 m sobre el terreno
+const MAX_DELTA = 0.1; // Si la pestaña estuvo oculta, no se simula un salto de tiempo enorme
 
 export class Game {
   constructor(container) {
@@ -30,7 +37,6 @@ export class Game {
     // PerspectiveCamera(fov, aspecto, near, far). "far" algo mayor que el final
     // de la niebla: lo que está más lejos no se vería y no se dibuja.
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, forestConfig.fog.far + 20);
-    this.camera.position.set(WORLD.spawn.x + 10, 12, WORLD.spawn.z + 18);
 
     // ---------- Renderer ----------
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -42,31 +48,31 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.container.appendChild(this.renderer.domElement);
 
-    // ---------- OrbitControls ----------
-    // Clic izquierdo: girar · rueda: zoom · clic derecho: desplazarse por el bosque.
-    // En la Fase 5 el objetivo pasará a ser el personaje.
+    // ---------- OrbitControls en tercera persona ----------
+    // El punto de mira (target) sigue al personaje; el jugador gira la cámara
+    // alrededor de él con el ratón (clic izquierdo + arrastrar) y acerca con la rueda.
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true; // Movimiento suave
-    this.controls.screenSpacePanning = false; // El desplazamiento se hace sobre el suelo
-    this.controls.target.set(WORLD.spawn.x, 1, WORLD.spawn.z - 4);
-    this.controls.maxPolarAngle = Math.PI / 2.15; // Evita mirar por debajo del suelo
-    this.controls.minDistance = 4;
-    this.controls.maxDistance = 45;
-    // Límites del punto de mira: nunca sale de la zona jugable (120 × 120)
-    this.targetMin = new THREE.Vector3(-WORLD.playHalf, 1, -WORLD.playHalf);
-    this.targetMax = new THREE.Vector3(WORLD.playHalf, 1, WORLD.playHalf);
-    this.clampOffset = new THREE.Vector3(); // Vector reutilizable (sin crear objetos por fotograma)
+    this.controls.enableDamping = true; // Giro suave
+    this.controls.enablePan = false; // El desplazamiento lo hace el personaje, no la cámara
+    this.controls.minDistance = 3;
+    this.controls.maxDistance = 15;
+    this.controls.minPolarAngle = 0.2; // Ni completamente cenital…
+    this.controls.maxPolarAngle = Math.PI / 2.05; // …ni por debajo del horizonte
 
     this.createLights();
 
-    // ---------- Bosque ----------
-    // La carga de los GLB es asíncrona: "ready" es una promesa que se resuelve
-    // cuando el bosque está en la escena (o se rechaza si falla algún modelo).
+    // ---------- Carga: bosque + personaje en paralelo ----------
+    // "ready" es una promesa que se resuelve cuando todo está en la escena
+    // (o se rechaza si falla algún modelo; main.js muestra el error).
     this.forest = null;
-    this.ready = this.loadForest(forestConfig);
+    this.physics = null;
+    this.player = new Player(this.scene);
+    this.ready = this.load(forestConfig);
 
     // Reloj para calcular el tiempo entre fotogramas (delta)
     this.clock = new THREE.Clock();
+    this.followDelta = new THREE.Vector3(); // Vector reutilizable (sin crear objetos por fotograma)
+    this.followTarget = new THREE.Vector3();
 
     // Ajustar cámara y renderer cuando cambia el tamaño de la ventana
     window.addEventListener('resize', () => this.onResize());
@@ -113,10 +119,22 @@ export class Game {
     this.sun.target.updateMatrixWorld();
   }
 
-  async loadForest(forestConfig) {
-    const geometries = await loadForestModels(forestConfig);
+  async load(forestConfig) {
+    const [geometries] = await Promise.all([loadForestModels(forestConfig), this.player.load()]);
     this.forest = createForest(forestConfig, geometries);
     this.scene.add(this.forest.group);
+
+    // Física: mundo con el terreno y los obstáculos del bosque + cuerpo del personaje
+    this.physics = createPhysics(this.forest);
+    const { x, z } = WORLD.spawn;
+    // El personaje aparece mirando hacia la plataforma de venta
+    const sell = SAWMILL_AREAS.sellZone;
+    const yaw = Math.atan2((sell.minX + sell.maxX) / 2 - x, (sell.minZ + sell.maxZ) / 2 - z);
+    this.player.attachBody(this.physics.createPlayerBody(x, z), yaw);
+
+    // Cámara inicial: detrás del personaje y algo elevada
+    const target = this.controls.target.set(x, this.player.position.y + CAMERA_HEIGHT, z);
+    this.camera.position.set(target.x - Math.sin(yaw) * 7, target.y + 3.5, target.z - Math.cos(yaw) * 7);
 
     // Medición: tras unos fotogramas mostramos en consola el coste real de un fotograma
     // desde la vista actual (incluye el pase de sombras). Solo informativo.
@@ -124,6 +142,26 @@ export class Game {
       const { calls, triangles } = this.renderer.info.render;
       console.info(`[Timber Rush] Draw calls: ${calls} · Triángulos: ${triangles}`);
     }, 1000);
+  }
+
+  /** Activa los controles del personaje solo cuando se está jugando (pantalla de juego). */
+  setPlaying(playing) {
+    this.player.setEnabled(playing);
+  }
+
+  /**
+   * La cámara acompaña al personaje: el punto de mira se acerca suavemente a él y la
+   * cámara se desplaza lo mismo, de modo que se conserva el ángulo y la distancia
+   * que haya elegido el jugador con el ratón.
+   */
+  followPlayer(dt) {
+    const p = this.player.position;
+    this.followTarget.set(p.x, p.y + CAMERA_HEIGHT, p.z);
+    const target = this.controls.target;
+    this.followDelta.copy(target);
+    target.lerp(this.followTarget, 1 - Math.exp(-CAMERA_FOLLOW * dt));
+    this.followDelta.subVectors(target, this.followDelta);
+    this.camera.position.add(this.followDelta);
   }
 
   onResize() {
@@ -139,20 +177,23 @@ export class Game {
   // Bucle principal con requestAnimationFrame (se sincroniza con el refresco de pantalla)
   loop() {
     requestAnimationFrame(this.loop);
-    // delta se usará desde la Fase 5 (movimiento, físicas y animaciones)
-    this.clock.getDelta();
+    const dt = Math.min(this.clock.getDelta(), MAX_DELTA);
+
+    if (this.physics) {
+      // 1. Entrada → velocidad del cuerpo  2. Física en pasos fijos  3. Cuerpo → modelo
+      this.player.update(dt, this.camera);
+      this.physics.world.step(FIXED_STEP, dt, 5);
+      this.player.syncVisual(dt);
+      this.followPlayer(dt);
+    }
 
     this.controls.update(); // Necesario cuando enableDamping está activo
 
-    // El punto de mira no puede salir de la zona jugable: si se pasa, se devuelve
-    // al límite y la cámara se desplaza lo mismo (mantiene la distancia y el ángulo).
-    const target = this.controls.target;
-    this.clampOffset.copy(target);
-    target.clamp(this.targetMin, this.targetMax);
-    this.clampOffset.sub(target);
-    if (this.clampOffset.lengthSq() > 0) this.camera.position.sub(this.clampOffset);
+    // La cámara no atraviesa el suelo (el terreno es ondulado)
+    const minY = heightAt(this.camera.position.x, this.camera.position.z) + CAMERA_MIN_GROUND;
+    if (this.camera.position.y < minY) this.camera.position.y = minY;
 
-    this.updateShadowArea(target);
+    this.updateShadowArea(this.controls.target);
     this.renderer.render(this.scene, this.camera);
   }
 }

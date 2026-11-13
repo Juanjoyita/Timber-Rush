@@ -50,9 +50,15 @@ function enterMenu(profile) {
 
 // ---------- Menú principal ----------
 ui.bindMenuEvents({
-  // De momento "Jugar" muestra la escena 3D; el Bosque Verde se construye en la Fase 4
-  onPlay: () => ui.showScreen('game'),
-  onBackToMenu: () => ui.showScreen('menu'),
+  // Los controles del personaje solo funcionan mientras se está en la pantalla de juego
+  onPlay: () => {
+    ui.showScreen('game');
+    game.setPlaying(true);
+  },
+  onBackToMenu: () => {
+    game.setPlaying(false);
+    ui.showScreen('menu');
+  },
 });
 
 // ---------- Manejadores de los formularios ----------

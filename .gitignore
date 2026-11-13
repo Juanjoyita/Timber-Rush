@@ -9,5 +9,9 @@ dist/
 .env.local
 *.local
 
+# Paquetes originales descargados (~330 MB). Solo se versionan los recursos
+# ya preparados que están en public/assets/
+recursos-originales/
+
 # Archivos del sistema
 .DS_Store
