@@ -31,10 +31,14 @@
 - **Uso previsto:** animación `TreeChopping_Loop` (archivo sin root motion `UAL2_Standard.glb`),
   adaptada con Blender al esqueleto del Worker (retargeting previo, no en tiempo de ejecución).
 
-### Personaje provisional (leñador actual)
-- **Autor:** Quaternius
-- **Archivo:** `public/assets/models/lumberjack.glb`
-- **Estado:** se sustituirá por el Worker. Fuente exacta pendiente de registrar.
+### Archivo generado: `public/assets/models/worker.glb`
+- Worker (Ultimate Modular Men Pack) con sus animaciones Idle, Walk y Run + `TreeChopping_Loop`
+  de UAL2 adaptada a su esqueleto. Generado con `herramientas/retarget_worker.py` (Blender 5.2.0).
+  Ambos orígenes son CC0.
+
+### Personaje anterior (ya no se usa)
+- **Autor:** Quaternius · **Archivo:** `public/assets/models/lumberjack.glb`
+- Sustituido por el Worker en la Fase 5. Se conserva hasta confirmar el cambio visualmente.
 
 ## Bibliotecas
 - Three.js (MIT) · cannon-es (MIT) · Appwrite Web SDK (BSD-3-Clause) · Vite (MIT)

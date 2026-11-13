@@ -14,7 +14,7 @@ const SHADOW_MAP = 2048;
 const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
 
 // Cámara en tercera persona
-const CAMERA_HEIGHT = 1.2; // Punto de mira: a la altura del pecho del personaje (m)
+const CAMERA_HEIGHT = 1.5; // Punto de mira: a la altura de los hombros del personaje (1,83 m)
 const CAMERA_FOLLOW = 8; // Rapidez con que la cámara alcanza al personaje (mayor = más rígida)
 const CAMERA_MIN_GROUND = 0.5; // La cámara nunca baja de 0,5 m sobre el terreno
 const MAX_DELTA = 0.1; // Si la pestaña estuvo oculta, no se simula un salto de tiempo enorme
