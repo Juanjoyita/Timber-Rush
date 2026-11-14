@@ -7,11 +7,14 @@
 // FASE 9: trabajadores del aserradero: producen madera en el almacén mientras se juega.
 // EVOLUCIÓN DEL ASERRADERO: cinco etapas visuales según el nivel comprado (sawmillStages.js) y
 //          producción de los trabajadores según ese nivel (ritmo y lotes).
+// FASE 11A: cinco bosques. Solo el bosque actual está construido; al viajar se guarda en memoria
+//          el estado de su tala (árboles, tocones, temporizadores y madera del suelo) y se
+//          reconstruye el destino (misma semilla = mismo bosque) restaurando el suyo.
 // FASE 10: menú principal cinematográfico (órbita sobre el bosque) y transiciones con la
 //          cámara en tercera persona. En el menú NO se simula nada del gameplay.
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
-import { FORESTS, SALE } from '../config.js';
+import { forestById, FORESTS, SALE } from '../config.js';
 import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, surfaceAt, WORLD } from './forest.js';
 import { createPhysics, FIXED_STEP, PLAYER_RADIUS } from './physics.js';
 import { Player } from './Player.js';
@@ -24,6 +27,7 @@ import { SaleCelebration } from './saleEffects.js';
 import { WorkerCrew, WorkerProduction } from './workers.js';
 import { MenuCamera } from './menuCamera.js';
 import { clampLevel, loadSawmillModels, SawmillStages } from './sawmillStages.js';
+import { ForestAmbience } from './forestAmbience.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -35,10 +39,27 @@ const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
 const CAMERA_FOV = 65;
 const MAX_DELTA = 0.1; // Si la pestaña estuvo oculta, no se simula un salto de tiempo enorme
 
+// Viaje entre bosques (Fase 11A): la cámara sube entre nubes (niebla densa del color del cielo),
+// el bosque cambia oculto por ellas y la cámara baja hasta el Worker en el bosque nuevo.
+export const TRAVEL_FX = {
+  up: 1.2, // s subiendo mientras se cierran las nubes
+  hold: 0.9, // s mínimos entre nubes (el color pasa al del bosque destino; aquí se construye)
+  down: 1.6, // s bajando mientras se abren
+  rise: 24, // m que sube la cámara
+  cloud: { near: 0.5, far: 11 }, // Niebla "dentro de las nubes"
+};
+const ease = (t) => t * t * t * (t * (t * 6 - 15) + 10); // Aceleración y frenada suaves
+
 export class Game {
   constructor(container) {
     this.container = container;
-    const forestConfig = FORESTS[0]; // Bosque Verde
+    const forestConfig = FORESTS[0]; // Bosque Verde (el del perfil se aplica con setForest)
+    this.forestConfig = forestConfig;
+    this.forestId = forestConfig.id;
+    this.targetForestId = forestConfig.id; // Bosque pedido (puede llegar antes que los modelos)
+    this.forestStates = new Map(); // id → estado de la tala de los bosques NO construidos (memoria)
+    this.forestTask = Promise.resolve(); // Cambios de bosque, uno detrás de otro
+    this.ambience = null; // Partículas del bosque actual
 
     // ---------- Escena ----------
     // THREE.Scene es el contenedor de todos los objetos, luces y cámara.
@@ -128,10 +149,16 @@ export class Game {
     this.onPauseChange = () => {};
     this.onLockHint = () => {};
     this.onShopChange = () => {}; // Tienda abierta/cerrada (Fase 8): main.js muestra el panel
+    // Viajar (Fase 11A): aviso junto al poste, panel abierto/cerrado
+    this.onTravelPostChange = () => {};
+    this.onTravelChange = () => {};
+    this.nearTravelPost = false;
     this.session = new PlaySession(this.cameraRig, this.player, {
       onPauseChange: (paused) => this.onPauseChange(paused),
       onLockHint: (show) => this.onLockHint(show),
       onShopChange: (open) => this.onShopChange(open),
+      onTravelChange: (open) => this.onTravelChange(open),
+      onInteract: () => this.interact(),
     });
     this.cameraRig.onLockChange = (locked) => this.session.lockChange(locked);
     this.cameraRig.onLockError = () => this.session.lockError();
@@ -143,7 +170,7 @@ export class Game {
     });
     window.addEventListener('blur', () => this.session.blur());
 
-    this.ready = this.load(forestConfig);
+    this.ready = this.load();
 
     // Reloj para calcular el tiempo entre fotogramas (delta)
     this.clock = new THREE.Clock();
@@ -157,7 +184,8 @@ export class Game {
 
   createLights() {
     // AmbientLight: luz base uniforme para que las caras en sombra no queden negras.
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.75));
+    this.ambientLight = new THREE.AmbientLight(0xffffff, 0.75); // Color e intensidad: los del bosque
+    this.scene.add(this.ambientLight);
 
     // DirectionalLight: simula el sol. Es la ÚNICA luz que proyecta sombras (optimización).
     this.sun = new THREE.DirectionalLight(0xfff0d0, 2.4);
@@ -193,10 +221,44 @@ export class Game {
     this.sun.target.updateMatrixWorld();
   }
 
-  async load(forestConfig) {
-    const [geometries, sawmillGeometries] = await Promise.all([loadForestModels(forestConfig), loadSawmillModels(), this.player.load()]);
+  async load() {
+    const [geometries, sawmillGeometries] = await Promise.all([loadForestModels(this.forestConfig), loadSawmillModels(), this.player.load()]);
+    // Modelos compartidos por los cinco bosques: se cargan una sola vez
+    this.baseGeometries = geometries;
+    this.sawmillGeometries = sawmillGeometries;
     this.player.equipAxe(this.axeLevel ?? 1); // Por si el perfil se cargó antes que el modelo
-    this.forest = createForest(forestConfig, geometries);
+
+    // Ataque y tala separados: el personaje golpea (haya o no un árbol) y avisa de cada impacto;
+    // el sistema de tala del bosque actual comprueba si alcanza a un árbol y le aplica el daño.
+    this.player.onAttackImpact = (attack) => this.chopping?.receiveAttack(attack) ?? false;
+    // Pasos: sonido posicional en los pies, según el suelo (hierba o madera del aserradero)
+    // y más fuerte al correr. El ritmo lo marcan las animaciones Walk / Run.
+    this.player.onFootstep = (step) => this.playFootstep(step);
+
+    this.buildForest(forestById(this.targetForestId)); // El del perfil, si ya se conoce
+
+    // Trabajadores visibles en sus puestos del cobertizo (mismos puestos en todos los bosques)
+    this.crew = new WorkerCrew(this.scene, this.player, this.forest.workerSpots, (pos) => this.audio.play('worker_chop', pos));
+    this.crew.setCount(this.workerCount);
+
+    // Medición: tras unos fotogramas mostramos en consola el coste real de un fotograma
+    // desde la vista actual (incluye el pase de sombras). Solo informativo.
+    setTimeout(() => {
+      const { calls, triangles } = this.renderer.info.render;
+      console.info(`[Timber Rush] Draw calls: ${calls} · Triángulos: ${triangles}`);
+    }, 1000);
+  }
+
+  // ---------- Bosques (Fase 11A) ----------
+
+  /**
+   * Construye un bosque: escenario, física, aserradero según su nivel, tala (con el estado que
+   * tenía al salir de él, si ya se visitó), ambiente y luz. El personaje aparece en el inicio.
+   */
+  buildForest(config) {
+    this.forestConfig = config;
+    this.forestId = config.id;
+    this.forest = createForest(config, this.baseGeometries);
     this.scene.add(this.forest.group);
 
     // Física: mundo con el terreno y los obstáculos del bosque + cuerpo del personaje
@@ -206,50 +268,251 @@ export class Game {
     const sell = SAWMILL_AREAS.sellZone;
     const yaw = Math.atan2((sell.minX + sell.maxX) / 2 - x, (sell.minZ + sell.maxZ) / 2 - z);
     this.player.attachBody(this.physics.createPlayerBody(x, z), yaw);
+    this.spawnYaw = yaw; // Para volver al inicio en una partida nueva
 
     // Aserradero según su nivel: construcciones, colisiones y obstáculos de la cámara
     this.sawmillStages = new SawmillStages({
-      geometries: sawmillGeometries,
+      geometries: this.sawmillGeometries,
       origin: WORLD.sawmill,
       material: this.forest.materials.nature,
       legacyTable: this.forest.sawmillLegacyTable,
       physics: this.physics,
       cameraBoxes: this.forest.cameraBoxes,
     });
-    this.sawmillStages.setLevel(this.sawmillLevel); // Por si el perfil se cargó antes que los modelos
+    this.sawmillStages.setLevel(this.sawmillLevel);
     this.scene.add(this.sawmillStages.group);
-    this.spawnYaw = yaw; // Para volver al inicio en una partida nueva
 
-    // Ataque y tala separados: el personaje golpea (haya o no un árbol) y avisa de cada impacto;
-    // el sistema de tala comprueba si alcanza a un árbol (alcance + arco frontal) y le aplica
-    // el daño. Sus eventos (golpe, caída, impacto contra el suelo) se convierten en sonidos.
-    // Un golpe al aire no genera eventos: ni daño ni sonidos de madera.
+    // Tala del bosque (resistencia, madera por árbol y precio de su madera: los de este bosque)
     this.chopping = new ChoppingSystem({
       forest: this.forest,
-      forestConfig,
+      forestConfig: config,
       scene: this.scene,
       onEvent: (event) => this.audio.handleChopEvent(event),
     });
-    this.player.onAttackImpact = (attack) => this.chopping.receiveAttack(attack);
-
-    // Pasos: sonido posicional en los pies, según el suelo (hierba o madera del aserradero)
-    // y más fuerte al correr. El ritmo lo marcan las animaciones Walk / Run.
-    this.player.onFootstep = (step) => this.playFootstep(step);
-
-    // Trabajadores visibles en sus puestos del cobertizo (hachazo suave y posicional)
-    this.crew = new WorkerCrew(this.scene, this.player, this.forest.workerSpots, (pos) => this.audio.play('worker_chop', pos));
-    this.crew.setCount(this.workerCount);
+    const saved = this.forestStates.get(config.id);
+    if (saved) {
+      this.chopping.restore(saved); // Árboles talados, tocones, temporizadores y madera del suelo
+      this.forestStates.delete(config.id);
+    }
 
     // Cámara: obstáculos (terreno, troncos y aserradero; no las hojas) y posición inicial detrás
     this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
     this.cameraRig.placeBehind(this.player.position, yaw);
 
-    // Medición: tras unos fotogramas mostramos en consola el coste real de un fotograma
-    // desde la vista actual (incluye el pase de sombras). Solo informativo.
-    setTimeout(() => {
-      const { calls, triangles } = this.renderer.info.render;
-      console.info(`[Timber Rush] Draw calls: ${calls} · Triángulos: ${triangles}`);
-    }, 1000);
+    this.applyForestLook(config, { lightsOnly: Boolean(this.travelFx) }); // Viajando: las nubes siguen tapando
+    this.ambience = new ForestAmbience(config.theme?.particles ?? null, config.seed);
+    if (this.ambience.points) this.scene.add(this.ambience.points);
+    this.forest.setLogPile(this.storagePile ?? 0);
+    this.inSellZone = false;
+    this.nearTravelPost = false;
+    this.shadowCenter.set(Infinity, Infinity);
+  }
+
+  /** Cielo, niebla y luces del bosque (sombras: las mismas, solo del sol). */
+  applyForestLook(config, { lightsOnly = false } = {}) {
+    const light = config.light ?? FORESTS[0].light;
+    this.sun.color.set(light.sun);
+    this.sun.intensity = light.sunIntensity;
+    this.ambientLight.color.set(light.ambient);
+    this.ambientLight.intensity = light.ambientIntensity;
+    if (lightsOnly) return;
+    const sky = config.colors.sky;
+    this.scene.background.set(sky);
+    this.scene.fog.color.set(sky);
+    this.scene.fog.near = config.fog.near;
+    this.scene.fog.far = config.fog.far;
+    this.camera.far = config.fog.far + 20; // Lo que la niebla oculta no se dibuja
+    this.camera.updateProjectionMatrix();
+  }
+
+  /**
+   * Sale del bosque actual: guarda en memoria el estado de su tala y libera su escenario,
+   * física y partículas (los modelos compartidos se conservan).
+   */
+  teardownForest() {
+    if (!this.forest) return;
+    this.forestStates.set(this.forestId, this.chopping.snapshot());
+    this.chopping.dispose();
+    this.sawmillStages.dispose();
+    this.ambience?.dispose();
+    this.scene.remove(this.forest.group);
+    this.forest.dispose();
+    this.forest = this.physics = this.chopping = this.sawmillStages = this.ambience = null;
+    if (this.nearTravelPost) this.onTravelPostChange(false);
+    if (this.inSellZone) this.onSellZoneChange(false);
+  }
+
+  /**
+   * Bosque CONFIRMADO (perfil cargado o viaje guardado en Appwrite). Los cambios se hacen de uno
+   * en uno; si llegan varios seguidos, solo se construye el último. Devuelve una promesa que se
+   * resuelve cuando el bosque está listo.
+   */
+  setForest(id) {
+    const target = forestById(id).id;
+    this.targetForestId = target;
+    const task = this.forestTask.then(async () => {
+      await this.ready;
+      if (this.targetForestId !== target || (this.forest && this.forestId === target)) return;
+      this.teardownForest();
+      this.buildForest(forestById(target));
+    });
+    this.forestTask = task.catch((error) => console.error('[Timber Rush] No se pudo cambiar de bosque', error));
+    return task;
+  }
+
+  /**
+   * Viaje cinematográfico a otro bosque YA confirmado en Appwrite. La partida sigue congelada
+   * (panel de viaje abierto) hasta que termina. onPeak: el bosque ya está oculto por las nubes
+   * (main.js muestra el nombre del destino).
+   * @returns promesa que se resuelve con la cámara de nuevo detrás del Worker
+   */
+  travelTo(id, { onPeak = () => {}, onClear = () => {} } = {}) {
+    if (this.travelFx) return this.travelFx.promise;
+    const reduced = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+    const k = reduced ? 0.3 : 1;
+    const start = { position: this.camera.position.clone(), target: this.cameraRig.pivot.clone() };
+    const fx = {
+      phase: 'up', t: 0, id, onPeak, onClear, cleared: false, built: false, error: null,
+      up: TRAVEL_FX.up * k, hold: TRAVEL_FX.hold * k, down: TRAVEL_FX.down * k,
+      from: start,
+      to: { position: start.position.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise, 0)), target: start.target.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise * 0.6, 0)) },
+      fog: { near: this.scene.fog.near, far: this.scene.fog.far },
+      color0: this.scene.fog.color.clone(),
+      color1: new THREE.Color(forestById(id).colors.sky),
+      color: new THREE.Color(),
+    };
+    fx.promise = new Promise((resolve, reject) => {
+      fx.resolve = resolve;
+      fx.reject = reject;
+    });
+    this.travelFx = fx;
+    this.placeCloudPuffs(fx.from, fx.to);
+    return fx.promise;
+  }
+
+  /**
+   * Nubes que la cámara atraviesa al viajar: bocanadas blancas (1 InstancedMesh) repartidas a lo
+   * largo del recorrido. No les afecta la niebla: se ven sobre el color del cielo.
+   */
+  placeCloudPuffs(from, to) {
+    if (!this.cloudPuffs) {
+      const count = 46;
+      this.cloudPuffs = new THREE.InstancedMesh(
+        new THREE.IcosahedronGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, fog: false }),
+        count
+      );
+      this.cloudPuffs.name = 'nubes-viaje';
+      this.cloudPuffs.frustumCulled = false;
+      this.cloudPuffs.renderOrder = 2;
+      this.cloudPuffs.userData.seeds = Array.from({ length: count }, (_, i) => [Math.sin(i * 12.9898) * 0.5 + 0.5, Math.sin(i * 78.233) * 0.5 + 0.5, Math.sin(i * 39.425) * 0.5 + 0.5]);
+      this.scene.add(this.cloudPuffs);
+    }
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+    this.cloudPuffs.userData.seeds.forEach(([a, b, c], i) => {
+      const along = 0.25 + 0.75 * b; // Sobre todo en la parte alta del recorrido
+      p.lerpVectors(from.position, to.position, along);
+      const angle = a * Math.PI * 2, radius = 2.5 + c * 11;
+      p.x += Math.cos(angle) * radius;
+      p.z += Math.sin(angle) * radius;
+      p.y += (c - 0.5) * 4;
+      const size = 1.6 + 3.2 * ((a + c) % 1);
+      this.cloudPuffs.setMatrixAt(i, m.compose(p, q, sc.set(size * 1.4, size * 0.7, size)));
+    });
+    this.cloudPuffs.instanceMatrix.needsUpdate = true;
+    this.cloudPuffs.visible = true;
+  }
+
+  /** Opacidad de las nubes del viaje (0 = ocultas). */
+  setCloudOpacity(value) {
+    if (!this.cloudPuffs) return;
+    this.cloudPuffs.material.opacity = value;
+    this.cloudPuffs.visible = value > 0.001;
+  }
+
+  /** Coloca la cámara entre dos poses y la niebla entre dos densidades (k = 0..1). */
+  travelPose(from, to, k, fogFrom, fogTo, color) {
+    this.camera.position.lerpVectors(from.position, to.position, k);
+    this._travelTarget = (this._travelTarget ?? new THREE.Vector3()).lerpVectors(from.target, to.target, k);
+    this.camera.lookAt(this._travelTarget);
+    this.scene.fog.near = fogFrom.near + (fogTo.near - fogFrom.near) * k;
+    this.scene.fog.far = fogFrom.far + (fogTo.far - fogFrom.far) * k;
+    this.scene.fog.color.copy(color);
+    this.scene.background.copy(color);
+  }
+
+  updateTravelFx(dt) {
+    const fx = this.travelFx;
+    fx.t += dt;
+    if (fx.phase === 'up') {
+      const k = ease(Math.min(1, fx.t / fx.up));
+      this.travelPose(fx.from, fx.to, k, fx.fog, TRAVEL_FX.cloud, fx.color0);
+      this.setCloudOpacity(0.9 * Math.min(1, (fx.t / fx.up) * 1.6));
+      if (fx.t >= fx.up) {
+        fx.phase = 'clouds';
+        fx.t = 0;
+        // Oculto por las nubes: se cambia de bosque (se construye en segundo plano)
+        this.setForest(fx.id).then(
+          () => (fx.built = true),
+          (error) => {
+            fx.error = error;
+            fx.built = true;
+          }
+        );
+        fx.onPeak();
+      }
+    } else if (fx.phase === 'clouds') {
+      const k = ease(Math.min(1, fx.t / fx.hold));
+      this.travelPose(fx.to, fx.to, 1, TRAVEL_FX.cloud, TRAVEL_FX.cloud, fx.color.lerpColors(fx.color0, fx.color1, k));
+      if (fx.built && fx.t >= fx.hold) {
+        if (fx.error) {
+          this.setCloudOpacity(0);
+          this.travelFx = null;
+          this.applyForestLook(this.forestConfig);
+          fx.reject(fx.error);
+          return;
+        }
+        // Bajada: desde lo alto del campamento nuevo hasta detrás del Worker
+        const end = this.cameraRig.targetPose(this.player.position, { position: new THREE.Vector3(), target: new THREE.Vector3() });
+        fx.downFrom = { position: end.position.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise, 0)), target: end.target.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise * 0.6, 0)) };
+        fx.downTo = { position: end.position, target: end.target };
+        this.placeCloudPuffs(fx.downTo, fx.downFrom); // Nubes también al bajar
+        fx.phase = 'down';
+        fx.t = 0;
+      }
+    } else {
+      const k = ease(Math.min(1, fx.t / fx.down));
+      this.travelPose(fx.downFrom, fx.downTo, k, TRAVEL_FX.cloud, this.forestConfig.fog, fx.color1);
+      this.setCloudOpacity(0.9 * Math.max(0, 1 - (fx.t / fx.down) * 1.4));
+      if (!fx.cleared && fx.t >= fx.down * 0.4) {
+        fx.cleared = true;
+        fx.onClear(); // Las nubes se abren: el rótulo se retira y se ve el bosque
+      }
+      if (fx.t >= fx.down) {
+        this.setCloudOpacity(0);
+        this.travelFx = null;
+        this.applyForestLook(this.forestConfig); // Valores exactos del bosque nuevo
+        this.cameraRig.snapTo(this.player.position);
+        fx.resolve();
+      }
+    }
+  }
+
+  /** E durante la partida: junto al poste abre el panel de bosques. */
+  interact() {
+    if (!this.nearTravelPost || !this.session.active) return false;
+    return this.session.openTravel();
+  }
+
+  /** Aviso "E · Viajar" al acercarse al poste del campamento. */
+  updateTravelPost() {
+    const post = this.forest?.travelPost;
+    if (!post) return;
+    const p = this.player.position;
+    const near = Math.hypot(p.x - post.x, p.z - post.z) <= post.radius;
+    if (near === this.nearTravelPost) return;
+    this.nearTravelPost = near;
+    this.onTravelPostChange(near);
   }
 
   // ---------- Menú ↔ partida (Fase 10) ----------
@@ -296,6 +559,7 @@ export class Game {
    */
   resetWorld() {
     this.chopping?.resetAll();
+    this.forestStates.clear(); // Los demás bosques también vuelven a estar intactos
     this.production = new WorkerProduction();
     if (this.player.body) {
       const { x, z } = WORLD.spawn;
@@ -351,6 +615,7 @@ export class Game {
 
   /** Pila de troncos del almacén según lo almacenado (0..1). */
   setStoragePile(fraction) {
+    this.storagePile = fraction; // Se vuelve a aplicar al construir otro bosque
     this.forest?.setLogPile(fraction);
   }
 
@@ -391,6 +656,7 @@ export class Game {
     this.resetWorld(); // Bosque, madera del suelo y posición: nada de la cuenta anterior
     this.setWorkerCount(0);
     this.setSawmillLevel(0);
+    this.setForest(1); // La siguiente cuenta empieza viendo el Bosque Verde hasta cargar el suyo
   }
 
   /** Botón "Cerrar" de la tienda (Fase 8). */
@@ -444,11 +710,13 @@ export class Game {
       // Decoración del menú: trabajadores y máquinas en movimiento (sin producir ni sonar)
       this.crew?.update(dt, { silent: true });
       this.sawmillStages?.update(dt, this.player.body?.position ?? null);
+      this.ambience?.update(dt, this.camera.position);
     }
 
     // Cámara: en la partida sigue al Worker; en el menú y en las transiciones, la del menú
     if (this.session.playing) {
-      if (this.player.model) this.cameraRig.update(dt, this.player.position);
+      if (this.travelFx) this.updateTravelFx(dt); // Viaje entre bosques (cámara y nubes)
+      else if (this.player.model) this.cameraRig.update(dt, this.player.position);
     } else {
       this.menuCamera.update(dt);
     }
@@ -473,12 +741,14 @@ export class Game {
     const collected = this.chopping.wood.collect(dt, this.player.position, this.backpack, () => this.onBackpackFull());
     if (collected > 0) this.onWoodCollected(collected);
     this.updateSellZone();
+    this.updateTravelPost();
     this.saleCelebration.update(dt);
     // Trabajadores: producen solo durante la partida activa
     const units = this.production.update(dt, this.workerCount, this.storageFree(), this.sawmillLevel);
     if (units > 0) this.onWorkersProduce(units);
     this.crew?.update(dt);
-    // Máquinas del aserradero (solo visual: no producen madera ni cambian la economía)
+    // Máquinas del aserradero y partículas del bosque (solo visual)
     this.sawmillStages?.update(dt, this.player.body?.position ?? null);
+    this.ambience?.update(dt, this.camera.position);
   }
 }

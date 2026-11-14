@@ -367,6 +367,19 @@ export class SawmillStages {
     return true;
   }
 
+  /** Libera lo creado por las etapas al salir del bosque (los modelos del GLB se conservan). */
+  dispose() {
+    if (this.staticMesh) this.staticMesh.geometry.dispose();
+    this.conveyorLogs.dispose();
+    this.smoke.dispose();
+    this.smoke.geometry.dispose();
+    this.smoke.material.dispose();
+    this.physics?.setStageBoxes?.([]);
+    this.forkliftBody?.setEnabled(false);
+    if (this.cameraBoxes) for (let i = this.cameraBoxes.length - 1; i >= 0; i--) if (this.cameraBoxes[i].stage) this.cameraBoxes.splice(i, 1);
+    this.group.removeFromParent();
+  }
+
   get stage() {
     return stageOf(this.level);
   }

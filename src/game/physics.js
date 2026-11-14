@@ -199,6 +199,17 @@ export function createPhysics(forest) {
     world.addBody(log);
   }
 
+  // --- Elemento emblemático del bosque (Fase 11A): esferas como las rocas y cajas orientadas ---
+  const lm = forest.landmarkColliders ?? { spheres: [], boxes: [] };
+  for (const c of lm.spheres) obstacleSphere(c.x, c.z, c.r);
+  for (const c of lm.boxes) {
+    const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
+    body.position.set(c.x, c.y, c.z);
+    body.quaternion.setFromEuler(0, c.rotY, 0);
+    body.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)));
+    world.addBody(body);
+  }
+
   // --- Límites invisibles de la zona jugable (120 × 120): cuatro muros altos ---
   const H = WORLD.playHalf;
   // Una forma por muro: en cannon-es cada forma guarda una referencia a su cuerpo

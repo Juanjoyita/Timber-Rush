@@ -184,6 +184,8 @@
 
       <!-- Indicadores en columna (esquina superior izquierda): no reciben clics ni tapan el centro -->
       <div class="hud-stack">
+      <!-- Bosque actual (Fase 11A) -->
+      <p id="forest-hud" class="forest-hud" role="status" aria-label="Bosque actual">Bosque Verde</p>
       <!-- Mochila (Fase 7A) -->
       <div id="backpack-hud" class="backpack-hud" role="status" aria-label="Mochila">
         <svg class="backpack-icon" viewBox="0 0 32 32" aria-hidden="true">
@@ -262,6 +264,22 @@
         </div>
       </div>
 
+      <!-- Viajar entre bosques (Fase 11A): E junto al poste del campamento -->
+      <div id="travel" class="shop-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="travel-title">
+        <div class="shop-panel">
+          <header class="shop-header">
+            <h2 id="travel-title" class="shop-title">Bosques</h2>
+            <p class="shop-balance">Monedas ganadas en total: <strong id="travel-total">0</strong></p>
+            <button type="button" id="btn-travel-close" class="btn btn-secondary btn-small" aria-label="Cerrar el panel de bosques">Cerrar ✕</button>
+          </header>
+          <div id="travel-items" class="shop-items"></div>
+          <p id="travel-message" class="shop-message" role="status" aria-live="polite"></p>
+          <p class="shop-hint">Viajar es gratis · Tu mochila, el almacén y la madera que dejes en el suelo te esperan en cada bosque · <kbd>E</kbd> o <kbd>ESC</kbd> para cerrar</p>
+        </div>
+      </div>
+
+      <p id="travel-prompt" class="game-prompt hidden"><kbd>E</kbd> Viajar a otro bosque</p>
+
       <!-- Sobre la plataforma de venta -->
       <p id="sell-prompt" class="game-prompt hidden"><kbd>F</kbd> Vender madera</p>
       <p id="sale-message" class="game-toast hidden" role="alert"></p>
@@ -276,6 +294,13 @@
         </div>
       </div>
     </section>
+
+    <!-- Rótulo del bosque destino al viajar entre las nubes (Fase 11A) -->
+    <div id="forest-title" class="forest-title" role="status" aria-live="polite">
+      <p class="forest-title-kicker">Viajando a</p>
+      <p id="forest-title-name" class="forest-title-name"></p>
+      <p id="forest-title-detail" class="forest-title-detail"></p>
+    </div>
 
     <!-- Vite procesa este módulo ES6 y resuelve los imports de node_modules -->
     <!-- Cerrar sesión con cambios sin guardar (fuera de las pantallas: no se desactiva con setBusy) -->

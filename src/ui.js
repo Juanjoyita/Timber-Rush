@@ -133,7 +133,7 @@ export function renderStats(st) {
   $('st-workers').textContent = formatNumber(st.workers);
   $('st-bp-wood').textContent = `${formatNumber(st.backpack)} / ${formatNumber(st.backpackCapacity)}`;
   $('st-storage').textContent = `${formatNumber(st.storage)} / ${formatNumber(st.storageCapacity)}`;
-  $('st-forests').textContent = `${st.currentForest} · ${st.unlockedForests}/5`;
+  $('st-forests').textContent = `${st.currentForestName ?? st.currentForest} · ${st.unlockedForests}/5 desbloqueados`;
 }
 
 /** Controles de configuración con los valores actuales. */
@@ -487,6 +487,93 @@ export function bindShopEvents({ onBuy, onClose }) {
     if (button && !button.disabled) onBuy(button.dataset.buy);
   });
   $('btn-shop-close').addEventListener('click', onClose);
+}
+
+// ---------- Bosques (Fase 11A) ----------
+
+/** Nombre del bosque actual en el indicador. */
+export function setForestHud(name) {
+  $('forest-hud').textContent = name;
+}
+
+/** Aviso "E · Viajar a otro bosque" junto al poste. */
+export function showTravelPrompt(visible) {
+  $('travel-prompt').classList.toggle('hidden', !visible);
+}
+
+export function showTravel(open) {
+  $('travel').classList.toggle('hidden', !open);
+  if (open) showTravelMessage('');
+}
+
+/**
+ * Tarjetas de los bosques (economy.forestList): actual, disponibles para viajar y bloqueados
+ * con lo que falta en monedas históricas.
+ * @param busyId bosque al que se está viajando (todo deshabilitado)
+ */
+export function renderTravel(forests, totalCoinsEarned, busyId = null) {
+  $('travel-total').textContent = formatNumber(totalCoinsEarned);
+  $('travel-items').replaceChildren(
+    ...forests.map((f) => {
+      const card = document.createElement('div');
+      card.className = `shop-card travel-card${f.current ? ' is-current' : ''}${f.unlocked ? '' : ' is-locked'}`;
+      card.dataset.forest = String(f.id);
+      const swatch = document.createElement('div');
+      swatch.className = 'travel-swatch';
+      swatch.style.background = f.swatch ?? '#6dbb4b';
+      const line = (cls, text) => {
+        const el = document.createElement('p');
+        el.className = cls;
+        el.textContent = text;
+        return el;
+      };
+      card.append(swatch, line('shop-card-name', f.name), line('shop-card-effect', `Madera: ${formatNumber(f.valuePerUnit)} monedas/unidad`));
+      if (f.current) {
+        card.append(line('shop-soon-tag', 'Estás aquí'));
+      } else if (f.unlocked) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-primary btn-small';
+        button.dataset.travel = String(f.id);
+        button.disabled = busyId !== null;
+        button.textContent = busyId === f.id ? 'Viajando…' : 'Viajar';
+        card.append(button);
+      } else {
+        card.append(line('shop-card-level', `Se desbloquea con ${formatNumber(f.unlockAt)} monedas ganadas`));
+        const bar = document.createElement('div');
+        bar.className = 'travel-progress';
+        const fill = document.createElement('div');
+        fill.style.width = `${Math.min(100, ((f.unlockAt - f.missing) / f.unlockAt) * 100)}%`;
+        bar.append(fill);
+        card.append(bar, line('shop-card-missing', `Faltan ${formatNumber(f.missing)}`));
+      }
+      return card;
+    })
+  );
+}
+
+export function showTravelMessage(text, error = false) {
+  const el = $('travel-message');
+  el.textContent = text;
+  el.classList.toggle('is-error', error);
+}
+
+export function bindTravelEvents({ onTravel, onClose }) {
+  $('travel-items').addEventListener('click', (e) => {
+    const button = e.target.closest('[data-travel]');
+    if (button && !button.disabled) onTravel(Number(button.dataset.travel));
+  });
+  $('btn-travel-close').addEventListener('click', onClose);
+}
+
+/** Rótulo del bosque destino durante el viaje entre las nubes (null lo oculta). */
+export function showForestTitle(forest) {
+  const el = $('forest-title');
+  if (forest) {
+    $('forest-title-name').textContent = forest.name;
+    $('forest-title-detail').textContent = `Madera: ${formatNumber(forest.valuePerUnit)} monedas por unidad`;
+  }
+  el.classList.toggle('is-visible', Boolean(forest));
 }
 
 // ---------- Eventos ----------

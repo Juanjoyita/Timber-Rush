@@ -71,6 +71,7 @@ export const SYNC_SETTINGS = {
 };
 
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
+const FOREST_COUNT = 5; // Bosques del juego (columnas currentForest y unlockedForests: 1..5)
 /** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
 export const INITIAL_PROGRESS = { resources: { backpack: {}, storage: {} } };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -111,10 +112,13 @@ export class ProgressSync {
    *                probe(userId, currentVersion), classify(error) }
    * @param clock { now(), setTimeout(fn, ms), clearTimeout(id) } (se sustituye en las pruebas)
    */
-  constructor({ api, saleValue = null, purchaseOffer = null, storageCapacity = 100, productionDelay = 30000, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
+  constructor({ api, saleValue = null, purchaseOffer = null, forestUnlocks = null, storageCapacity = 100, productionDelay = 30000, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
     this.api = api;
     this.saleValue = saleValue; // (contenido, nivelAserradero) => { sold, units, coins } (economy.js)
     this.purchaseOffer = purchaseOffer; // (clave, niveles) => { column, level, cost } | { maxed } | null
+    // (monedas históricas) => bosques desbloqueados 1..5 (economy.unlockedForestCount). Sin ella,
+    // solo cuenta lo guardado en la columna unlockedForests.
+    this.forestUnlocks = forestUnlocks;
     this.storageCapacity = storageCapacity;
     this.productionDelay = productionDelay;
     this.onStorageChange = () => {}; // (total) => void — indicador del almacén y pila de troncos
@@ -127,6 +131,8 @@ export class ProgressSync {
     this.onPurchaseFailed = () => {}; // (compra, motivo) => void (solo resultados diferidos)
     this.onReset = () => {}; // () => void — nueva partida confirmada (una sola vez)
     this.onResetFailed = () => {}; // (motivo) => void (solo resultados diferidos)
+    this.onTravel = () => {}; // ({ forestId }) => void — viaje confirmado en Appwrite (Fase 11A)
+    this.onTravelFailed = () => {}; // ({ forestId, reason }) => void (solo resultados diferidos)
     this.saleSeq = 0; // Identificador de cada operación (no se reinicia al cambiar de cuenta)
     this.reset();
   }
@@ -153,7 +159,8 @@ export class ProgressSync {
     this.coins = 0; // Monedas disponibles CONFIRMADAS en Appwrite (fuente de verdad local)
     this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
     this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
-    this.forests = { currentForest: 1, unlockedForests: 1 }; // Solo lectura (bosques: Fase 11)
+    this.forests = { currentForest: 1, unlockedForests: 1 }; // Bosque actual y desbloqueados (Fase 11A)
+    this.savedForests = { currentForest: 1, unlockedForests: 1 }; // Lo que hay en Appwrite
     this.opInFlight = false; // Venta o compra en curso (nunca dos a la vez)
     this.lazyOnly = false; // Lo único pendiente es producción (guardado diferido)
     this.status = SAVE_STATUS.IDLE;
@@ -224,7 +231,14 @@ export class ProgressSync {
       workers: profile.workers ?? 0,
       sawmillLevel: profile.sawmillLevel ?? 0,
     };
-    this.forests = { currentForest: profile.currentForest ?? 1, unlockedForests: profile.unlockedForests ?? 1 };
+    // Bosques: el desbloqueo depende de las monedas HISTÓRICAS (nunca baja). Si la columna se
+    // quedó atrás (perfil anterior a la Fase 11A), cuenta lo que corresponda; se guardará con la
+    // próxima venta o viaje. Un bosque actual imposible (dato dañado) vuelve al Verde.
+    const stored = (v) => (Number.isInteger(v) && v >= 1 && v <= FOREST_COUNT ? v : 1);
+    this.savedForests = { currentForest: profile.currentForest ?? 1, unlockedForests: profile.unlockedForests ?? 1 };
+    const unlocked = Math.max(stored(profile.unlockedForests), this.unlocksFor(this.totalCoinsEarned));
+    const current = stored(profile.currentForest);
+    this.forests = { currentForest: current <= unlocked ? current : 1, unlockedForests: unlocked };
     this.confirmed = { resources: profile.resources ?? null, totalWoodCollected: profile.totalWoodCollected ?? null };
     this.onStorageChange(this.storageTotal);
     if (damaged) {
@@ -386,6 +400,38 @@ export class ProgressSync {
     return this.runOperation('sale');
   }
 
+  // ---------- Bosques (Fase 11A) ----------
+
+  /** Bosques desbloqueados con unas monedas históricas (sin función: los guardados). */
+  unlocksFor(totalCoins) {
+    return this.forestUnlocks ? Math.min(FOREST_COUNT, Math.max(1, this.forestUnlocks(totalCoins))) : 1;
+  }
+
+  /**
+   * Viajar a otro bosque (gratis): se guarda currentForest con la misma escritura versionada y
+   * atómica que el resto. El juego solo cambia de bosque al confirmarse (onTravel).
+   * @returns { ok } · { ok: false, reason } ('bloqueado', 'mismo-bosque', 'no-existe', …)
+   */
+  travel(forestId) {
+    return this.runOperation('travel', forestId);
+  }
+
+  planTravel(forestId) {
+    const id = Number(forestId);
+    if (!Number.isInteger(id) || id < 1 || id > FOREST_COUNT) return { error: 'no-existe' };
+    if (id > this.forests.unlockedForests) return { error: 'bloqueado' };
+    if (id === this.forests.currentForest) return { error: 'mismo-bosque' };
+    const data = { ...this.snapshot(), currentForest: id };
+    if (this.forests.unlockedForests !== this.savedForests.unlockedForests) data.unlockedForests = this.forests.unlockedForests;
+    return { data, op: { kind: 'travel', id: ++this.saleSeq, forestId: id, done: false } };
+  }
+
+  applyTravel(op, data) {
+    this.forests = { ...this.forests, currentForest: op.forestId };
+    this.savedForests = { currentForest: op.forestId, unlockedForests: data.unlockedForests ?? this.savedForests.unlockedForests };
+    this.onTravel({ id: op.id, forestId: op.forestId });
+  }
+
   // ---------- Comprar (Fase 8) ----------
 
   /**
@@ -433,6 +479,7 @@ export class ProgressSync {
     this.totalWood = 0;
     this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
     this.forests = { currentForest: 1, unlockedForests: 1 };
+    this.savedForests = { currentForest: 1, unlockedForests: 1 };
     this.base = JSON.parse(data.resources);
     this.restoring = true; // No son cambios pendientes: ya están guardados
     this.backpack.clear();
@@ -550,7 +597,10 @@ export class ProgressSync {
       coins: this.coins + coins,
       totalCoinsEarned: this.totalCoinsEarned + coins,
     };
-    const sale = { kind: 'sale', id: ++this.saleSeq, fromBackpack, storageAfter, units, earned: coins, done: false };
+    // Desbloqueo de bosques en la MISMA transacción que la venta que cruza el umbral
+    const unlockedAfter = Math.max(this.forests.unlockedForests, this.unlocksFor(data.totalCoinsEarned));
+    if (unlockedAfter !== this.savedForests.unlockedForests) data.unlockedForests = unlockedAfter;
+    const sale = { kind: 'sale', id: ++this.saleSeq, fromBackpack, storageAfter, units, earned: coins, unlockedBefore: this.forests.unlockedForests, done: false };
     return { data, sale };
   }
 
@@ -566,7 +616,19 @@ export class ProgressSync {
       this.applyPurchase(op, data);
       return;
     }
+    if (op.kind === 'travel') {
+      this.applyTravel(op, data);
+      return;
+    }
     const sale = op;
+    // Bosques desbloqueados por esta venta (ya guardados): se avisa una sola vez
+    let unlockedNow = [];
+    if (data.unlockedForests !== undefined) {
+      this.savedForests = { ...this.savedForests, unlockedForests: data.unlockedForests };
+      const before = Math.min(sale.unlockedBefore, this.forests.unlockedForests);
+      this.forests = { ...this.forests, unlockedForests: Math.max(this.forests.unlockedForests, data.unlockedForests) };
+      for (let id = before + 1; id <= this.forests.unlockedForests; id++) unlockedNow.push(id);
+    }
     const before = this.coins;
     this.coins = data.coins;
     this.totalCoinsEarned = data.totalCoinsEarned;
@@ -575,7 +637,7 @@ export class ProgressSync {
     this.restoring = true; // Retirar lo vendido no es un cambio pendiente de guardar
     this.backpack.remove(sale.fromBackpack); // Lo recogido durante la venta se conserva
     this.restoring = false;
-    this.onSale({ id: sale.id, earned: sale.earned, units: sale.units, coinsBefore: before, coins: this.coins, totalCoinsEarned: this.totalCoinsEarned });
+    this.onSale({ id: sale.id, earned: sale.earned, units: sale.units, coinsBefore: before, coins: this.coins, totalCoinsEarned: this.totalCoinsEarned, unlockedForests: unlockedNow });
   }
 
   /**
@@ -589,6 +651,7 @@ export class ProgressSync {
     if (!deferred) return;
     if (op.kind === 'reset') this.onResetFailed(reason);
     else if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
+    else if (op.kind === 'travel') this.onTravelFailed({ id: op.id, forestId: op.forestId, reason });
     else this.onSaleFailed({ id: op.id, reason });
   }
 
@@ -647,6 +710,13 @@ export class ProgressSync {
         ({ data: snapshot, sale } = plan);
       } else if (mode === 'reset') {
         ({ data: snapshot, op: sale } = this.planReset());
+      } else if (mode === 'travel') {
+        const plan = this.planTravel(arg);
+        if (plan.error) {
+          this.confirmSaved();
+          return { ok: false, reason: plan.error, status: this.status };
+        }
+        ({ data: snapshot, op: sale } = plan);
       } else if (mode === 'purchase') {
         const plan = this.planPurchase(arg);
         if (plan.error) {
@@ -666,7 +736,7 @@ export class ProgressSync {
       this.dirty = false;
       this.dirtySince = null;
       this.lazyOnly = false;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…' }[sale.kind]) : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…' }[sale.kind]) : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);

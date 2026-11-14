@@ -1102,3 +1102,95 @@ kbd {
   background: rgba(111, 174, 79, 0.25);
   border: 1px solid var(--verde-claro);
 }
+
+/* ---------- Bosques (Fase 11A) ---------- */
+
+/* Nombre del bosque actual, encima de los indicadores */
+.forest-hud {
+  align-self: flex-start;
+  padding: 4px 12px;
+  border-radius: var(--radio);
+  background: rgba(20, 35, 18, 0.7);
+  border-left: 4px solid var(--dorado);
+  color: var(--crema);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.02em;
+}
+
+/* Tarjeta de cada bosque: franja de color con su identidad */
+.travel-card {
+  border-left-width: 6px;
+}
+
+.travel-card .travel-swatch {
+  height: 10px;
+  clip-path: polygon(0 0, 100% 0, 96% 100%, 0 100%);
+}
+
+.travel-card.is-current {
+  border-left-color: var(--dorado);
+}
+
+.travel-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+.travel-progress > div {
+  height: 100%;
+  background: var(--dorado);
+}
+
+/* Rótulo del bosque destino: aparece entre las nubes (no recibe el ratón) */
+.forest-title {
+  position: fixed;
+  left: 50%;
+  top: 38%;
+  z-index: 9;
+  transform: translate(-50%, -50%) scale(0.96);
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease, transform 0.8s ease;
+  color: #fffaf0;
+  /* Banda oscura translúcida: se lee sobre nubes blancas, nieve o cielo violeta */
+  padding: 14px 34px 16px;
+  border-radius: var(--radio);
+  background: rgba(20, 35, 18, 0.62);
+  border-bottom: 3px solid var(--dorado);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+}
+
+.forest-title.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.forest-title-kicker {
+  font-size: 0.9rem;
+  letter-spacing: 0.3em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+.forest-title-name {
+  font-size: clamp(2rem, 7vw, 3.6rem);
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.forest-title-detail {
+  margin-top: 6px;
+  font-weight: 600;
+  color: var(--dorado);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .forest-title {
+    transition-duration: 0.01s;
+  }
+}

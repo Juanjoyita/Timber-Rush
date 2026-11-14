@@ -13,9 +13,9 @@ import { Game } from './game/Game.js';
 import * as api from './appwrite.js';
 import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
-import { nextUpgrade, productionStats, purchaseOffer, saleValue, shopItems } from './game/economy.js';
+import { forestList, nextUpgrade, productionStats, purchaseOffer, saleValue, shopItems, unlockedForestCount } from './game/economy.js';
 import { SaleCelebrationSequence } from './game/saleSequence.js';
-import { FORESTS, WORKERS } from './config.js';
+import { forestById, WORKERS } from './config.js';
 import { Settings } from './settings.js';
 
 // El bosque se dibuja desde el principio: detrás de la autenticación y del menú se ve la
@@ -41,6 +41,7 @@ const sync = new ProgressSync({
   api: { getProfile: api.getProfile, save: api.saveProgressFields, probe: api.probeVersionGuard, classify: api.classifySaveError },
   saleValue,
   purchaseOffer,
+  forestUnlocks: unlockedForestCount, // Bosques desbloqueados por monedas históricas (Fase 11A)
   storageCapacity: WORKERS.storageCapacity,
   productionDelay: WORKERS.saveDelay, // La producción se guarda como mucho cada 30 s
 });
@@ -60,6 +61,12 @@ sync.onSale = (sale) => {
   ui.coinCounter.animateTo(sale.coins);
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), sale.coins);
   ui.updateMenuCoins(sale.coins, sale.totalCoinsEarned);
+  // Fase 11A: la venta (ya guardada) desbloqueó bosques nuevos
+  if (sale.unlockedForests?.length) {
+    const names = sale.unlockedForests.map((id) => forestById(id).name).join(', ');
+    ui.showSaleMessage(`¡Nuevo bosque desbloqueado: ${names}! Viaja desde el poste del campamento (E).`);
+    ui.renderMenu({ coins: sync.coins, totalCoinsEarned: sync.totalCoinsEarned, unlockedForests: sync.forests.unlockedForests });
+  }
 };
 sync.onSaleFailed = ({ reason }) => {
   ui.showSaleMessage(`La venta no se completó (${reason}). Tu madera sigue en la mochila.`);
@@ -83,7 +90,89 @@ sync.onStorageChange = (total) => {
 };
 game.storageFree = () => sync.storageFree;
 // Madera del bosque actual (por ahora, el Bosque Verde)
-game.onWorkersProduce = (units) => sync.addToStorage(FORESTS[0].id, units);
+// Fase 11A: SIEMPRE madera del Bosque Verde (2 monedas/u), estés en el bosque que estés
+game.onWorkersProduce = (units) => sync.addToStorage(WORKERS.woodForestId, units);
+
+// ---------- Bosques (Fase 11A) ----------
+// Viajar es gratis. El cambio de bosque solo ocurre cuando Appwrite confirma currentForest
+// (misma escritura versionada y atómica). La mochila, el almacén y las monedas no cambian; la
+// madera del suelo y los árboles talados de cada bosque se conservan en memoria (Game.js).
+const FOREST_SWATCH = (f) => `#${(f.theme?.foliage?.[0] ?? f.colors.meadow).toString(16).padStart(6, '0')}`;
+let travelBusyId = null;
+const renderTravel = () =>
+  ui.renderTravel(
+    forestList(sync.totalCoinsEarned, sync.forests.unlockedForests, sync.forests.currentForest).map((f) => ({ ...f, swatch: FOREST_SWATCH(forestById(f.id)) })),
+    sync.totalCoinsEarned,
+    travelBusyId
+  );
+game.onTravelPostChange = ui.showTravelPrompt;
+game.onTravelChange = (open) => {
+  ui.showTravel(open);
+  if (open) renderTravel();
+};
+/**
+ * Cambia de bosque. Desde el panel de viaje: la cámara sube entre las nubes, el bosque cambia
+ * oculto por ellas (con el nombre del destino) y baja hasta el Worker; el juego sigue congelado.
+ * Fuera de la partida (p. ej. un viaje verificado más tarde, en el menú): cambio directo.
+ */
+let forestSwitch = Promise.resolve();
+function switchForest(forestId) {
+  const cinematic = game.session.inTravel;
+  if (cinematic) ui.showTravel(false); // El panel se aparta: se ve el viaje
+  const run = cinematic
+    ? game.travelTo(forestId, { onPeak: () => ui.showForestTitle(forestById(forestId)), onClear: () => ui.showForestTitle(null) })
+    : game.setForest(forestId);
+  forestSwitch = run.finally(() => {
+    ui.showForestTitle(null);
+    ui.setForestHud(forestById(game.forestId).name);
+  });
+  return forestSwitch;
+}
+sync.onTravel = ({ forestId }) => switchForest(forestId); // Confirmado en Appwrite
+sync.onTravelFailed = ({ forestId, reason }) => {
+  ui.showSaleMessage(`No se pudo guardar el viaje al ${forestById(forestId).name} (${reason}).`);
+};
+const TRAVEL_MESSAGES = {
+  bloqueado: 'Este bosque todavía está bloqueado.',
+  'mismo-bosque': 'Ya estás en este bosque.',
+  'no-existe': 'Ese bosque no existe.',
+  'en-curso': 'Espera a que termine la operación en curso.',
+  [SAVE_STATUS.CONFLICT]: 'No se puede viajar: tu progreso cambió en otra sesión. Recarga la página.',
+  [SAVE_STATUS.CONDITION]: 'No se puede viajar: el guardado está desactivado.',
+  [SAVE_STATUS.BLOCKED]: 'No se puede viajar: los datos guardados no son válidos.',
+};
+ui.bindTravelEvents({
+  onTravel: async (forestId) => {
+    if (travelBusyId !== null) return;
+    travelBusyId = forestId;
+    game.session.travelBusy = true; // El panel no se cierra durante el viaje
+    renderTravel();
+    ui.showTravelMessage(`Viajando al ${forestById(forestId).name}…`);
+    let result;
+    try {
+      result = await sync.travel(forestId);
+      if (result.ok) await forestSwitch.catch(() => {}); // Viaje entre las nubes hasta el bosque nuevo
+    } finally {
+      travelBusyId = null;
+      game.session.travelBusy = false;
+    }
+    if (result.ok && game.forestId === forestId) {
+      game.session.closeTravel({ force: true }); // De vuelta al juego en el bosque nuevo
+      return;
+    }
+    if (result.ok) {
+      // Guardado, pero el bosque no se pudo construir (p. ej. falta memoria): se avisa
+      ui.showTravel(true);
+      renderTravel();
+      ui.showTravelMessage('El viaje se guardó, pero el bosque no se pudo cargar. Recarga la página para continuar allí.', true);
+      return;
+    }
+    renderTravel();
+    const text = TRAVEL_MESSAGES[result.reason] ?? `No se pudo guardar el viaje (${result.reason ?? result.status}). Sigues en el ${forestById(game.forestId).name}.`;
+    ui.showTravelMessage(text, true);
+  },
+  onClose: () => game.session.closeTravel(),
+});
 
 // ---------- Tienda (Fase 8) ----------
 // Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
@@ -199,6 +288,8 @@ function applyProgressToGame() {
   game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
   game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
+  // Bosque guardado (Fase 11A): se construye en segundo plano; Continuar espera a que esté listo
+  game.setForest(sync.forests.currentForest).then(() => ui.setForestHud(forestById(game.forestId).name), () => {});
   renderStorage();
   ui.renderBackpack(game.backpack);
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), sync.coins);
@@ -238,6 +329,7 @@ ui.bindMenuEvents({
         const result = await sync.refreshFromServer();
         if (!result.ok) throw new Error(result.reason);
         if (result.reloaded) applyProgressToGame(); // Progreso cambiado en otra sesión
+        await game.forestTask; // El bosque guardado ya está construido
         ui.showScreen('game');
         game.startEnterTransition(() => {
           entering = false;
@@ -263,7 +355,7 @@ ui.bindMenuEvents({
     ui.showScreen('menu');
     sync.flush(); // Guardar al volver al menú
   },
-  onShowStats: () => ui.renderStats(sync.stats()),
+  onShowStats: () => ui.renderStats({ ...sync.stats(), currentForestName: forestById(sync.forests.currentForest).name }),
   /** Nueva partida: solo llega aquí con "REINICIAR" escrito (lo comprueba ui.js). */
   onNewGame: async () => {
     ui.setNewGameBusy(true);

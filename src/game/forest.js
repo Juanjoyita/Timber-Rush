@@ -15,6 +15,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { allFootprints, MAX_SAWMILL_LEVEL, stageColliders } from './sawmillStages.js';
+import { applyForestTheme, createExtraKinds } from './forestThemes.js';
+import { createLandmark, landmarkShape } from './landmarks.js';
+import { TRAVEL } from '../config.js';
 
 const MODEL_PATH = '/assets/models/';
 
@@ -123,32 +126,119 @@ function distanceToRect(x, z, r) {
 /** Distancia al borde del camino más cercano (negativa = encima del camino). */
 export function distanceToPaths(x, z) {
   let best = Infinity;
-  for (const p of PATHS) best = Math.min(best, distanceToSegment(x, z, p.ax, p.az, p.bx, p.bz) - p.width);
+  for (const p of pathSegments) best = Math.min(best, distanceToSegment(x, z, p.ax, p.az, p.bx, p.bz) - p.width);
   return best;
 }
 
+// Caminos del bosque activo (Fase 11A): el principal (inicio → plataforma de venta) es el mismo
+// en todos; las sendas secundarias son propias de cada bosque (config.paths: líneas quebradas).
+let pathSegments = PATHS;
+/** Segmentos de los caminos del bosque activo (para las pruebas y el terreno). */
+export const activePaths = () => pathSegments;
+function pathsFor(config) {
+  if (!config?.paths) return PATHS;
+  const segments = [PATHS[0]];
+  for (const { points, width = 1.3 } of config.paths) {
+    for (let i = 0; i + 1 < points.length; i++) segments.push({ ax: points[i][0], az: points[i][1], bx: points[i + 1][0], bz: points[i + 1][1], width });
+  }
+  return segments;
+}
+
+// Elemento emblemático del bosque activo (lago, árbol gigante…): ver landmarks.js
+let landmark = null;
+export const activeLandmark = () => landmark;
+
+// ---------- Relieve de cada bosque (Fase 11A) ----------
+// Cada bosque tiene su relieve (config.terrain): ondulación más o menos marcada, colinas u
+// hondonadas propias y montañas en el horizonte. El campamento, el aserradero y el inicio
+// siguen siendo planos en todos. Solo hay un bosque construido a la vez: createForest activa
+// su relieve y heightAt (terreno visual, física, cámara, tala) lo usa.
+// El Bosque Verde no define terrain: su relieve es exactamente el de antes.
+const DEFAULT_TERRAIN = { waves: 1, features: [], horizon: DISTANT_HILLS, blend: 10 };
+let terrain = DEFAULT_TERRAIN;
+
+/** Activa el relieve de un bosque (determinista: misma semilla = mismo relieve). */
+export function setTerrain(config) {
+  pathSegments = pathsFor(config);
+  landmark = config?.landmark ?? null;
+  const t = config?.terrain;
+  if (!t) {
+    terrain = DEFAULT_TERRAIN;
+    return terrain;
+  }
+  const rand = createRandom((config.seed ?? 1) + 11);
+  const features = [];
+  const H = WORLD.playHalf - 4;
+  for (const spec of [t.hills, t.hollows].filter(Boolean)) {
+    let placed = 0;
+    for (let attempt = 0; placed < spec.count && attempt < spec.count * 60; attempt++) {
+      const x = range(rand, -H, H), z = range(rand, -H, H);
+      const h = range(rand, spec.height[0], spec.height[1]), r = range(rand, spec.radius[0], spec.radius[1]);
+      // Lejos del campamento y del inicio (allí el suelo es plano)
+      if (distanceToRect(x, z, SAWMILL_EXPANSION) < r * 1.5 + 10 || Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) < r * 1.5 + 12) continue;
+      if (features.some((f) => Math.hypot(f.x - x, f.z - z) < (f.r + r) * 0.7)) continue; // Sin amontonarse
+      if (landmark && Math.hypot(landmark.x - x, landmark.z - z) < landmark.clear + r * 1.5) continue; // Ni sobre el lago o el árbol
+      features.push({ x, z, h, r });
+      placed++;
+    }
+  }
+  let horizon = DISTANT_HILLS;
+  if (t.horizon) {
+    horizon = [];
+    for (let i = 0; i < t.horizon.count; i++) {
+      const a = (i / t.horizon.count) * Math.PI * 2 + range(rand, -0.25, 0.25);
+      const d = range(rand, t.horizon.distance[0], t.horizon.distance[1]);
+      horizon.push({ x: Math.cos(a) * d, z: Math.sin(a) * d, h: range(rand, t.horizon.height[0], t.horizon.height[1]), r: range(rand, t.horizon.radius[0], t.horizon.radius[1]) });
+    }
+  }
+  // blend: distancia (m) a la que el relieve alcanza su altura completa desde las zonas planas.
+  // Más amplia que en el Verde: con más relieve, la subida desde el campamento es suave.
+  terrain = { waves: t.waves ?? 1, features, horizon, blend: 10 + 2.5 * (t.waves ?? 1) + 4 };
+  return terrain;
+}
+
+/** Relieve activo (para las pruebas). */
+export const activeTerrain = () => terrain;
+
 /**
  * Altura del terreno:
- * - Ondulaciones suaves (< 1 m) en todo el bosque.
+ * - Ondulaciones suaves en todo el bosque (más marcadas según el bosque) y colinas u
+ *   hondonadas propias.
  * - Totalmente plano en el campamento y el spawn.
- * - Algunas elevaciones aisladas muy lejos, en el horizonte.
+ * - Elevaciones muy lejos, en el horizonte (montañas en el Nevado).
  */
 export function heightAt(x, z) {
   let h =
-    0.35 * Math.sin(x * 0.07 + 1.3) * Math.cos(z * 0.06 - 0.4) +
-    0.25 * Math.sin((x + z) * 0.045 + 2.1) +
-    0.15 * Math.cos((x - z) * 0.11);
-  // Aplanado progresivo: 0 dentro de los claros, ondulación completa a pocos metros
-  const flat = Math.min(
-    smoothstep(3, 10, distanceToRect(x, z, SAWMILL_EXPANSION)),
-    smoothstep(3, 9, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z))
-  );
-  h *= flat;
-  for (const hill of DISTANT_HILLS) {
-    const d2 = (x - hill.x) ** 2 + (z - hill.z) ** 2;
-    h += hill.h * Math.exp(-d2 / (2 * hill.r * hill.r));
+    terrain.waves *
+    (0.35 * Math.sin(x * 0.07 + 1.3) * Math.cos(z * 0.06 - 0.4) +
+      0.25 * Math.sin((x + z) * 0.045 + 2.1) +
+      0.15 * Math.cos((x - z) * 0.11));
+  for (const f of terrain.features) {
+    const d2 = (x - f.x) ** 2 + (z - f.z) ** 2;
+    if (d2 < 9 * f.r * f.r) h += f.h * Math.exp(-d2 / (2 * f.r * f.r));
   }
-  return h;
+  // Aplanado progresivo: 0 dentro de los claros, ondulación completa a pocos metros
+  let flat = Math.min(
+    smoothstep(3, terrain.blend, distanceToRect(x, z, SAWMILL_EXPANSION)),
+    smoothstep(3, terrain.blend - 1, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z))
+  );
+  // Elemento emblemático: suelo plano a su alrededor + su propia forma (cuenco, loma…)
+  let shape = 0;
+  if (landmark) {
+    const d = Math.hypot(x - landmark.x, z - landmark.z);
+    if (d < landmark.clear + 8) {
+      flat = Math.min(flat, smoothstep(landmark.clear - 2, landmark.clear + 8, d));
+      shape = landmarkShape(landmark, d);
+    }
+  }
+  h = h * flat + shape;
+  let far = 0;
+  for (const hill of terrain.horizon) {
+    const d2 = (x - hill.x) ** 2 + (z - hill.z) ** 2;
+    far += hill.h * Math.exp(-d2 / (2 * hill.r * hill.r));
+  }
+  // Montañas propias de un bosque: su falda no levanta el campamento ni el inicio (siempre planos)
+  return h + (terrain === DEFAULT_TERRAIN ? far : far * flat);
 }
 
 /** Matriz de transformación (posición + giro + escala) para instancias. */
@@ -329,6 +419,44 @@ export function createProceduralTreeGeometries() {
       [new THREE.CylinderGeometry(0.11, 0.11, 0.05, 6).translate(0, 1.5, 0), 0x3a3a35],
       [blob(0.75, 0, 2.8, 0, 1.2), 0x8cc152],
       [blob(0.55, 0.35, 3.5, 0.1), 0x9bcf5e],
+    ]),
+
+    // ---- Fase 11A: una especie propia por bosque (colores base verdes: el tema los adapta) ----
+    // Arce (Otoñal): copa muy ancha y aplanada, formada por varias masas
+    proc_arce: mergeParts([
+      [trunk(0.16, 0.24, 1.6), TRUNK],
+      [blob(1.3, 0, 2.8, 0, 0.75), 0x5f9e3f],
+      [blob(1.0, 1.05, 2.6, 0.4, 0.7), 0x6aab47],
+      [blob(1.0, -0.95, 2.7, -0.5, 0.7), 0x6aab47],
+      [blob(0.9, 0.2, 3.45, -0.6, 0.7), 0x5f9e3f],
+      [blob(0.8, -0.3, 3.5, 0.7, 0.65), 0x74b550],
+    ]),
+    // Abeto nevado (Nevado): pisos de ramas con una capa de nieve encima de cada uno
+    proc_abeto_nevado: mergeParts([
+      [trunk(0.12, 0.2, 1.2), TRUNK],
+      ...[[1.5, 1.3, 1.7], [1.2, 1.2, 2.5], [0.9, 1.1, 3.25], [0.62, 1.0, 3.9], [0.32, 0.8, 4.5]].flatMap(([r, h, y]) => [
+        [cone(r, h, y), 0x2f6b4a],
+        [cone(r * 0.78, h * 0.42, y + h * 0.32), 0xf3f7fb],
+      ]),
+    ]),
+    // Árbol retorcido (Místico): tronco quebrado en tres tramos y frutos claros colgando
+    proc_retorcido: mergeParts([
+      [new THREE.CylinderGeometry(0.14, 0.2, 1.3, 6).rotateZ(0.25).translate(-0.12, 0.673, 0), TRUNK],
+      [new THREE.CylinderGeometry(0.11, 0.14, 1.1, 6).rotateZ(-0.4).translate(0.05, 1.65, 0), TRUNK],
+      [new THREE.CylinderGeometry(0.08, 0.11, 0.9, 6).rotateZ(0.45).translate(0.08, 2.5, 0), TRUNK],
+      [blob(0.95, -0.1, 3.35, 0, 0.8), 0x4f9a5a],
+      [blob(0.7, 0.7, 3.0, 0.35), 0x5aa864],
+      [blob(0.62, -0.75, 3.1, -0.3), 0x5aa864],
+      ...[[0.55, 2.45, 0.4], [-0.55, 2.55, -0.2], [0.1, 2.35, -0.65], [0.75, 2.7, -0.35], [-0.3, 2.4, 0.6]].map(([x, y, z]) => [new THREE.IcosahedronGeometry(0.12, 0).translate(x, y, z), 0xfff07a]),
+    ]),
+    // Secuoya (Ancestral): tronco grueso y rojizo con la base ensanchada y copa en lo alto
+    proc_secuoya: mergeParts([
+      [new THREE.CylinderGeometry(0.45, 0.7, 0.8, 7).translate(0, 0.4, 0), 0x7a4028],
+      [trunk(0.26, 0.45, 4.6), 0x7a4028],
+      [cone(1.5, 1.5, 4.9), 0x2f6a34],
+      [cone(1.2, 1.4, 5.7), 0x3b7a3c],
+      [cone(0.85, 1.25, 6.4), 0x2f6a34],
+      [cone(0.45, 0.95, 7.0), 0x3b7a3c],
     ]),
   };
   return proceduralCache;
@@ -662,9 +790,19 @@ export function inStageClearing(x, z, radius, kind) {
   return SAWMILL_STAGE_FOOTPRINTS.some((f) => distanceToRect(x, z, f) < margin);
 }
 
+// Zona del elemento emblemático que se deja libre según el tipo de objeto (las plantas pueden
+// crecer alrededor, pero no en el agua ni dentro del árbol o las ruinas)
+const LANDMARK_RESERVE = { tree: 1, rock: 1, bush: 0.9 };
+function inLandmarkArea(x, z, radius, kind) {
+  if (!landmark) return false;
+  const reach = kind === 'plant' ? landmark.plantClear : landmark.clear * LANDMARK_RESERVE[kind];
+  return Math.hypot(x - landmark.x, z - landmark.z) < reach + radius;
+}
+
 function isReserved(x, z, radius, kind, clearings) {
   const m = MARGINS[kind];
   return (
+    inLandmarkArea(x, z, radius, kind) ||
     distanceToPaths(x, z) < m.path + radius ||
     distanceToRect(x, z, SAWMILL_AREAS.compound) < m.camp + radius ||
     Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) < m.spawn + radius ||
@@ -766,7 +904,7 @@ const CHOP_REACH = 1.0; // Distancia máxima al tronco para considerarlo talable
  * incluido) y relleno por inundación desde el punto de inicio.
  * @returns (x, z) => true si se puede llegar caminando a ese punto
  */
-function createWalkability({ trees, rocks, decorColliders, boxes }) {
+function createWalkability({ trees, rocks, decorColliders, boxes, circles = [] }) {
   const H = WORLD.playHalf;
   const N = Math.ceil((2 * H) / WALK_CELL);
   const blocked = new Uint8Array(N * N);
@@ -782,6 +920,7 @@ function createWalkability({ trees, rocks, decorColliders, boxes }) {
     stamp(x - R, x + R, z - R, z + R, (cx, cz) => (cx - x) ** 2 + (cz - z) ** 2 < R * R);
   };
   for (const t of trees) circle(t.position.x, t.position.z, t.userData.radius);
+  for (const c of circles) circle(c.x, c.z, c.r); // Elemento emblemático (tronco, piedras…)
   // Rocas con su tamaño visual completo (más prudente que su colisión, que es el 80 %)
   for (const r of rocks) circle(r.position.x, r.position.z, r.userData.radius);
   for (const c of decorColliders) {
@@ -830,6 +969,28 @@ function isChoppable(tree, canReach) {
   return false;
 }
 
+// ---------- Poste indicador (Fase 11A) ----------
+
+/** Poste con flechas que señala los otros bosques. Devuelve { group, collider }. */
+function createTravelPost(mats, at) {
+  const group = new THREE.Group();
+  group.name = 'poste-bosques';
+  const piece = (material, sx, sy, sz, x, y, z, rotY = 0) => {
+    const m = mesh(new THREE.BoxGeometry(sx, sy, sz), material, { cast: true, receive: true });
+    m.position.set(x, y, z);
+    m.rotation.y = rotY;
+    group.add(m);
+  };
+  piece(mats.woodDark, 0.2, 2.6, 0.2, 0, 1.3, 0); // Poste
+  piece(mats.woodLight, 1.3, 0.32, 0.08, 0.35, 2.15, 0, 0.35); // Flechas en varias direcciones
+  piece(mats.woodLight, 1.2, 0.3, 0.08, -0.3, 1.75, 0, -0.5);
+  piece(mats.woodLight, 1.1, 0.28, 0.08, 0.25, 1.38, 0, 2.2);
+  piece(mats.gold, 0.26, 0.12, 0.26, 0, 2.66, 0); // Remate dorado (se ve desde lejos)
+  const y = heightAt(at.x, at.z);
+  group.position.set(at.x, y, at.z);
+  return { group, collider: { x: at.x, y: y + 1.3, z: at.z, hx: 0.15, hy: 1.3, hz: 0.15 } };
+}
+
 // ---------- API pública ----------
 
 /**
@@ -838,8 +999,13 @@ function isChoppable(tree, canReach) {
  *   trees, rocks y bushes guardan los datos para colisiones (Fase 5) y tala (Fase 6).
  */
 export function createForest(config, geometries) {
-  // Se añaden los árboles propios a las geometrías cargadas de los GLB
-  geometries = { ...geometries, ...createProceduralTreeGeometries() };
+  // Se añaden los árboles propios a las geometrías cargadas de los GLB y se aplica el tema del
+  // bosque (Fase 11A). owned: geometrías creadas para este bosque (se liberan con dispose()).
+  setTerrain(config); // Relieve de este bosque (heightAt lo usa a partir de aquí)
+  const themedBase = { ...geometries, ...createProceduralTreeGeometries() }; // Compartidas: no se liberan
+  const themed = applyForestTheme(themedBase, config);
+  geometries = themed.geometries;
+  const owned = themed.owned;
   // Semillas separadas: cambiar la decoración no mueve los árboles talables
   const rand = createRandom(config.seed);
   const decoRand = createRandom(config.seed + 1);
@@ -856,6 +1022,14 @@ export function createForest(config, geometries) {
 
   const sawmill = createSawmill(geometries, models.logs, mats);
   group.add(sawmill.group);
+
+  // Elemento emblemático del bosque (Fase 11A): 1-2 mallas y pocas colisiones
+  const emblem = config.landmark ? createLandmark(config.landmark, mats, heightAt) : null;
+  if (emblem) {
+    group.add(emblem.group);
+    for (const g of emblem.owned.geometries) owned.add(g);
+  }
+  const landmarkColliders = emblem?.colliders ?? { spheres: [], boxes: [] };
 
   // spacing: separación entre árboles/rocas · obstacles: huella física (troncos, rocas, arbustos)
   const spacing = new SpatialGrid(4);
@@ -922,7 +1096,7 @@ export function createForest(config, geometries) {
     const z = range(rand, -H + 3, H - 3);
     const modelName = pick(rand, models.rocks);
     const bb = geometries[modelName].boundingBox;
-    const scale = range(rand, 0.7, 1.1);
+    const scale = range(rand, ...(config.rockScale ?? [0.7, 1.1]));
     const radius = Math.max(-bb.min.x, bb.max.x, -bb.min.z, bb.max.z) * scale;
     if (isReserved(x, z, radius, 'rock', clearings) || !spacing.isFree(x, z, radius, 0.8)) continue;
     rocksPlaced++;
@@ -954,7 +1128,7 @@ export function createForest(config, geometries) {
     const z = range(logRand, -H + 4, H - 4);
     const name = pick(logRand, models.logs);
     const bb = geometries[name].boundingBox;
-    const scale = range(logRand, 0.9, 1.25);
+    const scale = range(logRand, ...(config.fallenLogScale ?? [0.9, 1.25]));
     const alongX = bb.max.x - bb.min.x >= bb.max.z - bb.min.z; // Eje principal del modelo
     const along = (alongX ? bb.max.x - bb.min.x : bb.max.z - bb.min.z) * scale; // Largo del tronco
     if (isReserved(x, z, along / 2, 'rock', clearings) || !spacing.isFree(x, z, along / 2, 0.6)) continue;
@@ -982,7 +1156,11 @@ export function createForest(config, geometries) {
   // caídos. Se calcula a dónde se puede llegar caminando desde el inicio y se quitan los árboles
   // sin ningún punto alcanzable cerca del tronco (nunca habría un árbol imposible de talar).
   // Cuenta con todas las construcciones futuras del aserradero (nivel máximo)
-  const canReach = createWalkability({ trees, rocks, decorColliders, boxes: [...sawmill.colliders, ...stageColliders(MAX_SAWMILL_LEVEL, SM)] });
+  const canReach = createWalkability({
+    trees, rocks, boxes: [...sawmill.colliders, ...stageColliders(MAX_SAWMILL_LEVEL, SM)],
+    decorColliders: [...decorColliders, ...landmarkColliders.boxes.filter((b) => !b.walkable)],
+    circles: landmarkColliders.spheres,
+  });
   const reachableTrees = trees.filter((t) => isChoppable(t, canReach));
   trees.length = 0;
   trees.push(...reachableTrees);
@@ -1017,7 +1195,8 @@ export function createForest(config, geometries) {
       if (Math.max(Math.abs(x), Math.abs(z)) < minHalf) continue; // Solo fuera del cuadrado interior
       if (!decoGrid.isFree(x, z, minDist / 2)) continue;
       const name = decoRand() < config.deadTreeRatio ? pick(decoRand, models.deadTrees) : pick(decoRand, livingTrees);
-      const h = range(decoRand, 0.9, 1.6), w = range(decoRand, 0.85, 1.3);
+      const k = config.decorativeScale ?? 1; // Ancestral: árboles decorativos gigantes
+      const h = range(decoRand, 0.9, 1.6) * k, w = range(decoRand, 0.85, 1.3) * k;
       const y = heightAt(x, z) - 0.4;
       const matrix = makeMatrix(x, y, z, decoRand() * Math.PI * 2, w, h, w);
       const entry = treeEntry(geometries[name], matrix, x, y, z, w, h);
@@ -1044,7 +1223,7 @@ export function createForest(config, geometries) {
     const z = range(decoRand, -H + 2, H - 2);
     const d = density(x, z);
     if (decoRand() > 0.3 + d * 0.6) continue;
-    const scale = range(decoRand, 0.55, 0.9);
+    const scale = range(decoRand, ...(config.bushScale ?? [0.55, 0.9]));
     const r = 1.1 * scale;
     if (isReserved(x, z, r, 'bush', clearings) || !obstacles.isFree(x, z, r, 0.6)) continue;
     const bushModel = pick(decoRand, models.bushes);
@@ -1071,14 +1250,44 @@ export function createForest(config, geometries) {
       const z = cz + (decoRand() - 0.5) * 3.5;
       if (Math.abs(x) > H || Math.abs(z) > H) continue;
       if (isReserved(x, z, 0.2, 'plant', clearings) || !obstacles.isFree(x, z, 0.2, 0.15)) continue;
-      const isFlower = decoRand() < 0.2 + openness * 0.4;
+      const isFlower = decoRand() < (0.2 + openness * 0.4) * (config.flowerRatio ?? 1); // Nevado: sin flores
       const name = pick(decoRand, isFlower ? models.flowers : models.grass);
-      const plantMatrix = makeMatrix(x, heightAt(x, z) - 0.03, z, decoRand() * Math.PI * 2, range(decoRand, 0.8, 1.3));
+      const plantMatrix = makeMatrix(x, heightAt(x, z) - 0.03, z, decoRand() * Math.PI * 2, range(decoRand, ...(config.plantScale ?? [0.8, 1.3])));
       placed++;
       if (!inStageClearing(x, z, 0.2, 'plant')) plants.get(name).push(plantMatrix); // Nada asoma por los suelos
     }
   }
   group.add(...instancedByModel(plants, geometries, mats.nature, { cast: false, receive: true }));
+
+  // --- Elementos propios del bosque (Fase 11A): hojas caídas, nieve, setas, cristales ---
+  // Semilla propia: no cambia nada de lo anterior. Sin colisión (como la hierba).
+  const extraRand = createRandom(config.seed + 3);
+  const extraKinds = config.theme?.extras?.length ? createExtraKinds(mats) : {}; // El Verde no tiene
+  for (const { kind, count } of config.theme?.extras ?? []) {
+    const def = extraKinds[kind];
+    const matrices = [];
+    for (let attempt = 0; matrices.length < count && attempt < count * 30; attempt++) {
+      const x = range(extraRand, -H + 1, H - 1), z = range(extraRand, -H + 1, H - 1);
+      const scale = range(extraRand, def.scale[0], def.scale[1]);
+      const yaw = extraRand() * Math.PI * 2;
+      const r = def.radius * scale;
+      if (isReserved(x, z, r, 'plant', clearings) || inStageClearing(x, z, r, 'plant') || !obstacles.isFree(x, z, r, 0.1)) continue;
+      matrices.push(makeMatrix(x, heightAt(x, z) + 0.01, z, yaw, scale));
+    }
+    for (const part of def.parts) {
+      const im = instanced(part.geometry, part.material, matrices, { cast: def.cast, receive: true, name: `extra-${kind}` });
+      group.add(im);
+      owned.add(part.geometry);
+    }
+  }
+  // Materiales propios de los extras (los que brillan) para liberarlos con el bosque
+  const extraMaterials = Object.values(extraKinds).flatMap((d) => d.parts.map((p) => p.material)).filter((m) => m !== mats.nature);
+  for (const d of Object.values(extraKinds)) for (const p of d.parts) owned.add(p.geometry);
+
+  // --- Poste indicador para viajar entre bosques (Fase 11A): junto al punto de inicio ---
+  const travelPost = createTravelPost(mats, TRAVEL.post);
+  group.add(travelPost.group);
+  sawmill.colliders.push(travelPost.collider); // El personaje no lo atraviesa
 
   // Todo es estático por ahora: matrices calculadas una vez y sin actualización por fotograma
   group.updateMatrixWorld(true);
@@ -1094,11 +1303,28 @@ export function createForest(config, geometries) {
     updateCameraOcclusion: visibility.updateCameraOcclusion, // Llamar cada fotograma con la posición de la cámara
     setTreeHidden: (tree, reason, hidden) => visibility.setHidden(tree.instance, reason, hidden),
     sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
-    cameraBoxes: sawmill.cameraBoxes, // Cajas que la cámara no atraviesa (aserradero y tejado)
+    cameraBoxes: [...sawmill.cameraBoxes, ...(emblem?.cameraBoxes ?? [])], // Cajas que la cámara no atraviesa (aserradero, tejado y árbol emblemático)
+    landmark: config.landmark ?? null,
+    landmarkColliders, // Colisiones del elemento emblemático (esferas y cajas orientadas)
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
     workerSpots: sawmill.workerSpots, // Puestos de los trabajadores del aserradero (Fase 9)
     sawmillLegacyTable: sawmill.legacyTable, // Mesa provisional (la sustituye la sierra del nivel 4)
     geometries, // Geometrías compartidas (la tala las reutiliza para tocones, caídas y troncos)
+    config,
+    travelPost: { x: TRAVEL.post.x, z: TRAVEL.post.z, radius: TRAVEL.radius }, // Viajar (E)
+    /**
+     * Libera la memoria del bosque al viajar a otro: geometrías propias (tema, terreno, extras),
+     * materiales e instancias. Las geometrías de los GLB, compartidas por todos, se conservan.
+     */
+    dispose() {
+      const shared = new Set(Object.values(themedBase));
+      group.traverse((o) => {
+        if (o.isInstancedMesh) o.dispose();
+        if (o.geometry && !shared.has(o.geometry)) o.geometry.dispose();
+      });
+      for (const g of owned) g.dispose();
+      for (const m of [...Object.values(mats), ...extraMaterials, ...(emblem?.owned.materials ?? [])]) m.dispose();
+    },
   };
 }

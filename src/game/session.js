@@ -12,6 +12,9 @@
 // - Tienda (Fase 8): B la abre (jugando y sin pausa) y B o ESC la cierran. Con la tienda abierta
 //   la simulación se congela (como en la pausa) y el cursor queda libre para hacer clic, pero no
 //   se muestra el panel de pausa. Al cerrarla se vuelve a capturar el cursor.
+// - Viajar (Fase 11A): E junto al poste del campamento abre el panel de bosques. Como la
+//   tienda: congela la simulación y libera el cursor; ESC o E lo cierran (si no hay un viaje
+//   en curso). Durante el viaje (carga del bosque) todo sigue congelado.
 // - Menú principal (Fase 10): modos menu → entering → playing → leaving → menu. Solo en
 //   "playing" (sin pausa ni tienda) la partida está activa. En el menú y en las transiciones no
 //   hay controles, ESC/B no hacen nada y perder el cursor no es una pausa.
@@ -22,13 +25,17 @@ export class PlaySession {
    * @param player     Player (setEnabled / resetInput)
    * @param callbacks  { onPauseChange(enPausa), onLockHint(mostrar) } para la interfaz
    */
-  constructor(cameraRig, player, { onPauseChange = () => {}, onLockHint = () => {}, onShopChange = () => {} } = {}) {
+  constructor(cameraRig, player, { onPauseChange = () => {}, onLockHint = () => {}, onShopChange = () => {}, onTravelChange = () => {}, onInteract = () => false } = {}) {
     this.cameraRig = cameraRig;
     this.player = player;
     this.onPauseChange = onPauseChange;
     this.onLockHint = onLockHint;
     this.onShopChange = onShopChange;
+    this.onTravelChange = onTravelChange;
+    this.onInteract = onInteract; // (código de tecla) => true si abre algo (poste de viaje)
     this.inShop = false;
+    this.inTravel = false; // Panel de bosques abierto (Fase 11A)
+    this.travelBusy = false; // Viaje en curso: el panel no se puede cerrar
     this.mode = 'menu';
     this.paused = false;
     this.attackHeld = false;
@@ -106,6 +113,11 @@ export class PlaySession {
       this.inShop = false;
       this.onShopChange(false);
     }
+    if (this.inTravel) {
+      this.inTravel = false;
+      this.travelBusy = false;
+      this.onTravelChange(false);
+    }
     this.paused = false;
     this.setActiveControls(false);
     this.onPauseChange(false);
@@ -131,7 +143,7 @@ export class PlaySession {
   }
 
   pause() {
-    if (!this.playing || this.paused || this.inShop) return; // Idempotente: ESC + pointerlockchange = una sola pausa
+    if (!this.playing || this.paused || this.inShop || this.inTravel) return; // Idempotente: ESC + pointerlockchange = una sola pausa
     this.paused = true;
     this.setActiveControls(false);
     this.onLockHint(false);
@@ -173,6 +185,32 @@ export class PlaySession {
     return true;
   }
 
+  // ---------- Viajar entre bosques (Fase 11A) ----------
+
+  /** Abre el panel de bosques: congela la simulación y libera el cursor (sin panel de pausa). */
+  openTravel() {
+    if (!this.active) return false;
+    this.inTravel = true;
+    this.paused = true;
+    this.setActiveControls(false);
+    this.onLockHint(false);
+    this.onTravelChange(true);
+    this.cameraRig.releaseLock();
+    return true;
+  }
+
+  /** Cierra el panel y vuelve al juego (pide de nuevo el cursor). No durante un viaje. */
+  closeTravel({ force = false } = {}) {
+    if (!this.inTravel || (this.travelBusy && !force)) return false;
+    this.inTravel = false;
+    this.travelBusy = false;
+    this.paused = false;
+    this.setActiveControls(true);
+    this.onTravelChange(false);
+    this.cameraRig.requestLock(); // Si el navegador no lo permite, se mostrará "Haz clic…"
+    return true;
+  }
+
   // ---------- Eventos (los conecta Game.js) ----------
 
   pointerDown(button) {
@@ -188,10 +226,15 @@ export class PlaySession {
   keyDown(code) {
     if (code === 'Escape') {
       if (this.inShop) this.closeShop();
+      else if (this.inTravel) this.closeTravel();
       else this.pause();
     } else if (code === 'KeyB') {
+      if (this.inTravel) return; // Con el panel de bosques abierto, B no hace nada
       if (this.inShop) this.closeShop();
       else this.openShop();
+    } else if (code === 'KeyE') {
+      if (this.inTravel) this.closeTravel();
+      else if (this.active) this.onInteract(code); // Game decide si hay algo cerca (el poste)
     }
   }
 
@@ -203,7 +246,7 @@ export class PlaySession {
     // Cursor perdido: nada de ataque ni teclas pulsadas; si se estaba jugando, pausa
     // (en la tienda el cursor se libera a propósito: no es una pausa)
     this.attackHeld = false;
-    if (this.inShop) return;
+    if (this.inShop || this.inTravel) return;
     this.player.resetInput();
     this.pause();
   }

@@ -497,6 +497,79 @@ export class ChoppingSystem {
     this.wood.clear();
   }
 
+  // ---------- Estado de cada bosque al viajar (Fase 11A) ----------
+
+  /**
+   * Estado de la tala de este bosque, para conservarlo en memoria al viajar a otro (no se
+   * guarda en Appwrite). Pequeño: solo lo que difiere de un bosque intacto.
+   * - Árboles cayendo: la caída se completa (su madera queda en el suelo, nada se pierde).
+   * - Árboles creciendo: terminan de crecer (vuelven a estar disponibles).
+   * - Troncos volando hacia la mochila: ya estaban en la mochila (el vuelo es solo visual).
+   * Los temporizadores se guardan relativos al reloj de este bosque, que solo avanza jugando:
+   * mientras no se está en él (o durante el viaje) quedan congelados.
+   */
+  snapshot() {
+    for (const a of [...this.animations]) {
+      if (a.type === 'fall') {
+        this.wood.addFromTree(this.woodPositions(a.tree, a.dir), a.dir, a.tree);
+        a.tree.state = TREE_STATE.FELLED;
+      } else {
+        this.forest.setTreeHidden(a.tree, HIDE_REASON.FELLED, false);
+        a.tree.resistance = this.maxResistance;
+        a.tree.felledAt = null;
+        a.tree.state = TREE_STATE.AVAILABLE;
+      }
+      this.releaseVisual(a.pivot);
+    }
+    this.animations.length = 0;
+    const trees = [];
+    this.forest.trees.forEach((tree, i) => {
+      if (tree.state === TREE_STATE.AVAILABLE && tree.resistance === this.maxResistance) return;
+      trees.push({ i, x: tree.position.x, z: tree.position.z, state: tree.state, resistance: tree.resistance, felledAt: tree.felledAt });
+    });
+    const wood = this.wood.records.map((r) => ({ units: r.units, forestId: r.forestId, x: r.x, z: r.z, matrix: r.matrix.toArray() }));
+    return { time: this.time, trees, wood };
+  }
+
+  /**
+   * Restaura el estado guardado con snapshot() en un bosque recién construido (misma semilla:
+   * los mismos árboles en el mismo orden; se comprueba la posición por si acaso).
+   */
+  restore(state) {
+    this.resetAll();
+    this.time = state.time;
+    for (const t of state.trees) {
+      const tree = this.forest.trees[t.i];
+      if (!tree || Math.abs(tree.position.x - t.x) > 1e-6 || Math.abs(tree.position.z - t.z) > 1e-6) continue;
+      tree.resistance = t.resistance;
+      tree.felledAt = t.felledAt;
+      tree.state = t.state;
+      if (t.state === TREE_STATE.FELLED) {
+        this.felled.add(tree);
+        this.forest.setTreeHidden(tree, HIDE_REASON.FELLED, true);
+        this.showStump(tree, true);
+      }
+    }
+    for (const w of state.wood) {
+      const k = this.wood.records.length % this.wood.models.length;
+      const mesh = this.wood.meshes[k];
+      const record = { units: w.units, x: w.x, y: heightAt(w.x, w.z), z: w.z, source: null, forestId: w.forestId, mesh, index: mesh.count, matrix: new THREE.Matrix4().fromArray(w.matrix) };
+      mesh.setMatrixAt(record.index, record.matrix);
+      mesh.userData.owners[record.index] = record;
+      mesh.count += 1;
+      mesh.instanceMatrix.needsUpdate = true;
+      this.wood.records.push(record);
+    }
+  }
+
+  /** Libera las instancias y mallas temporales al salir del bosque (las geometrías son del bosque). */
+  dispose() {
+    this.group.traverse((o) => {
+      if (o.isInstancedMesh) o.dispose();
+    });
+    this.group.removeFromParent();
+  }
+
   // ---------- Bucle ----------
 
   update(dt, playerPosition) {

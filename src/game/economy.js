@@ -28,6 +28,29 @@ export function productionStats(level = 0, interval = WORKERS.interval) {
   return { level: L, rate, batch, cycle: batch / rate, perMinute: rate * 60 };
 }
 
+// ---------- Bosques (Fase 11A) ----------
+
+/**
+ * Bosques desbloqueados (1..5) con unas monedas HISTÓRICAS (totalCoinsEarned). Como el histórico
+ * nunca baja al gastar, un desbloqueo es permanente. Viajar es gratis.
+ */
+export function unlockedForestCount(totalCoinsEarned = 0) {
+  const total = Math.max(0, Number(totalCoinsEarned) || 0);
+  return FORESTS.filter((f) => total >= f.unlockAt).length;
+}
+
+/**
+ * Estado de cada bosque para el panel de viaje.
+ * @returns [{ id, name, valuePerUnit, unlockAt, unlocked, current, missing }]
+ */
+export function forestList(totalCoinsEarned = 0, unlocked = 1, current = 1) {
+  const total = Math.max(0, Number(totalCoinsEarned) || 0);
+  return FORESTS.map((f) => {
+    const isUnlocked = f.id <= unlocked || total >= f.unlockAt;
+    return { id: f.id, name: f.name, valuePerUnit: f.valuePerUnit, unlockAt: f.unlockAt, unlocked: isUnlocked, current: f.id === current, missing: isUnlocked ? 0 : f.unlockAt - total };
+  });
+}
+
 /**
  * Qué se puede vender de un contenido { wood: { idBosque: unidades } } y cuánto vale.
  * Solo se vende la madera de bosques con precio conocido; el resto no se toca.

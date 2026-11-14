@@ -1,5 +1,26 @@
 // config.js — Datos del juego (solo datos, sin lógica).
-// FASE 4: configuración del Bosque Verde. Los otros cuatro bosques se añaden en la Fase 11.
+// FASE 4: configuración del Bosque Verde. FASE 11A: los otros cuatro bosques.
+
+// Modelos GLB compartidos por todos los bosques (se cargan una sola vez). Cada bosque los
+// adapta con su tema (colores, nieve, tamaño) al construirse: ver forest.js (applyForestTheme).
+const MODELS = {
+  pines: ['nature_tree_pine_01', 'nature_tree_pine_02', 'nature_tree_pine_03'],
+  roundTrees: ['nature_tree_deciduous_01', 'nature_tree_deciduous_02', 'nature_tree_deciduous_03'],
+  rocks: [
+    'nature_rock_01', 'nature_rock_02', 'nature_rock_03', 'nature_rock_04',
+    'nature_rock_05', 'nature_rock_06', 'nature_rock_07', 'nature_rock_08',
+  ],
+  bushes: ['nature_bush_01', 'nature_bush_02', 'nature_bush_03', 'nature_bush_04', 'nature_bush_05', 'nature_bush_06'],
+  grass: ['nature_grass_01', 'nature_grass_02', 'nature_grass_03', 'nature_grass_04', 'nature_grass_05', 'nature_grass_06'],
+  flowers: ['nature_flower_01', 'nature_flower_02', 'nature_flower_03', 'nature_flower_04'],
+  logs: ['nature_log_01', 'nature_log_02'],
+  deadTrees: ['nature_tree_dead_01'],
+  stumps: ['nature_stump_01', 'nature_stump_02'], // Tocón que queda al talar (Fase 6)
+};
+const PROCEDURAL_TREES = {
+  pines: ['proc_abeto', 'proc_pino_joven'],
+  round: ['proc_alamo', 'proc_roble', 'proc_abedul'],
+};
 
 export const FORESTS = [
   {
@@ -32,26 +53,10 @@ export const FORESTS = [
     fog: { near: 110, far: 340 },
 
     // Modelos GLB (public/assets/models/<nombre>.glb) — Low-Poly Nature Starter Pack (CC0)
-    models: {
-      pines: ['nature_tree_pine_01', 'nature_tree_pine_02', 'nature_tree_pine_03'],
-      roundTrees: ['nature_tree_deciduous_01', 'nature_tree_deciduous_02', 'nature_tree_deciduous_03'],
-      rocks: [
-        'nature_rock_01', 'nature_rock_02', 'nature_rock_03', 'nature_rock_04',
-        'nature_rock_05', 'nature_rock_06', 'nature_rock_07', 'nature_rock_08',
-      ],
-      bushes: ['nature_bush_01', 'nature_bush_02', 'nature_bush_03', 'nature_bush_04', 'nature_bush_05', 'nature_bush_06'],
-      grass: ['nature_grass_01', 'nature_grass_02', 'nature_grass_03', 'nature_grass_04', 'nature_grass_05', 'nature_grass_06'],
-      flowers: ['nature_flower_01', 'nature_flower_02', 'nature_flower_03', 'nature_flower_04'],
-      logs: ['nature_log_01', 'nature_log_02'],
-      deadTrees: ['nature_tree_dead_01'],
-      stumps: ['nature_stump_01', 'nature_stump_02'], // Tocón que queda al talar (Fase 6)
-    },
+    models: MODELS,
 
     // Árboles Low Poly propios (geometría de Three.js, ver forest.js): más variedad de formas
-    proceduralTrees: {
-      pines: ['proc_abeto', 'proc_pino_joven'],
-      round: ['proc_alamo', 'proc_roble', 'proc_abedul'],
-    },
+    proceduralTrees: PROCEDURAL_TREES,
 
     colors: {
       sky: 0x9fd7f0, // Fondo y niebla del mismo color: el horizonte se funde con el cielo
@@ -61,8 +66,210 @@ export const FORESTS = [
       hill: 0x5a9a48, // Elevaciones lejanas
       dirt: 0xb08850, // Caminos y campamento
     },
+    // Luz del bosque (Fase 11A). El Verde conserva la de siempre.
+    light: { sun: 0xfff0d0, sunIntensity: 2.4, ambient: 0xffffff, ambientIntensity: 0.75 },
+    theme: {}, // Sin cambios: los modelos con sus colores originales
+  },
+
+  // ---------- Fase 11A: cuatro bosques más ----------
+  // Resistencia, madera, valor y desbloqueo: valores aprobados en la especificación inicial.
+  // Misma lógica de juego; cambian la distribución, la vegetación, los colores, la luz, la niebla
+  // y los elementos propios de cada bosque (theme.extras y theme.particles).
+  {
+    id: 2,
+    name: 'Bosque Otoñal',
+    resistance: 12,
+    woodPerTree: 8,
+    valuePerUnit: 4,
+    unlockAt: 500,
+    seed: 2024,
+    treeCount: 1250,
+    treeSpacing: 2.5,
+    treeHeight: [0.8, 1.35],
+    treeWidth: [0.95, 1.35], // Copas anchas y redondeadas
+    groveCount: 26,
+    baseDensity: 0.34,
+    pineRatio: 0.22, // Sobre todo caducifolios
+    rockCount: 26,
+    decorativeTreeCount: 800,
+    deadTreeRatio: 0.1,
+    bushCount: 360,
+    smallPlantCount: 1300,
+    flowerRatio: 0.35, // Menos flores que en verano
+    fallenLogCount: 26,
+    fog: { near: 95, far: 320 },
+    models: MODELS,
+    proceduralTrees: { pines: PROCEDURAL_TREES.pines, round: [...PROCEDURAL_TREES.round, 'proc_arce', 'proc_arce'] }, // Arces
+    terrain: { waves: 1.6, hills: { count: 16, height: [1.2, 2.4], radius: [8, 13] } }, // Lomas suaves
+    // Elemento emblemático y sendas propias (Fase 11A, paso 2)
+    landmark: { kind: 'leafLake', name: 'Lago de las hojas', x: 32, z: -28, radius: 7, clear: 12, plantClear: 8 },
+    paths: [
+      { points: [[3, 4], [12, -6], [21, -15], [26, -21]] }, // Al lago
+      { points: [[3, 9], [18, 15], [32, 28], [48, 34]] },
+      { points: [[1, 13], [-5, 28], [-18, 42], [-30, 50]] },
+    ],
+    colors: { sky: 0xf2cfa0, grass: 0xa59a45, meadow: 0xc7a24a, forestFloor: 0x87552c, hill: 0x9a8645, dirt: 0x9b6a3c },
+    light: { sun: 0xffd29a, sunIntensity: 2.3, ambient: 0xffe4c4, ambientIntensity: 0.72 },
+    theme: {
+      foliage: [0xd9661f, 0xe8a531, 0xc23b22, 0xf0c13c, 0xb5501c, 0xe07a26], // Naranja, amarillo y rojo
+      bushes: [0xb8471f, 0xd98a2b, 0x9c3a1d],
+      grass: [0xb6a04a, 0xa88c3e, 0xc4ad55],
+      extras: [{ kind: 'leafLitter', count: 900 }], // Manchas de hojas caídas
+      particles: { kind: 'leaves', count: 260 }, // Hojas que caen
+    },
+  },
+  {
+    id: 3,
+    name: 'Bosque Nevado',
+    resistance: 25,
+    woodPerTree: 12,
+    valuePerUnit: 8,
+    unlockAt: 2500,
+    seed: 4242,
+    treeCount: 1100,
+    treeSpacing: 2.6,
+    treeHeight: [0.95, 1.6], // Pinos altos y estrechos
+    treeWidth: [0.8, 1.1],
+    groveCount: 22,
+    baseDensity: 0.32,
+    pineRatio: 0.9,
+    rockCount: 32,
+    decorativeTreeCount: 800,
+    deadTreeRatio: 0.14,
+    bushCount: 120,
+    smallPlantCount: 450, // Solo matas de hierba helada
+    flowerRatio: 0, // Sin flores en invierno
+    fallenLogCount: 18,
+    fog: { near: 70, far: 380 }, // Aire frío; se adivinan las montañas nevadas
+    models: MODELS,
+    proceduralTrees: { pines: [...PROCEDURAL_TREES.pines, 'proc_abeto_nevado', 'proc_abeto_nevado'], round: PROCEDURAL_TREES.round }, // Abetos nevados
+    // Colinas más altas y montañas nevadas en el horizonte
+    terrain: { waves: 1.3, hills: { count: 12, height: [1.8, 3.2], radius: [9, 14] }, horizon: { count: 9, height: [45, 75], radius: [35, 50], distance: [240, 320] } },
+    landmark: { kind: 'frozenLake', name: 'Lago helado', x: -34, z: 34, radius: 9, clear: 13, plantClear: 9.5 },
+    paths: [
+      { points: [[1, 13], [-8, 22], [-17, 27], [-23, 29]] }, // Al lago helado
+      { points: [[3, 4], [16, -12], [28, -30], [34, -48]] },
+      { points: [[3, 9], [22, 18], [40, 20], [52, 12]] },
+    ],
+    colors: { sky: 0xdce7f1, grass: 0xedf2f7, meadow: 0xfbfdff, forestFloor: 0xc6d3e0, hill: 0xe2eaf1, dirt: 0x9a9289 },
+    light: { sun: 0xe9f1ff, sunIntensity: 2.0, ambient: 0xd8e6ff, ambientIntensity: 0.85 },
+    theme: {
+      foliage: [0x2f5d4a, 0x355f55, 0x2a5243], // Verde oscuro frío bajo la nieve
+      bushes: [0x3d6656],
+      grass: [0xb9c7c4, 0xa9bcb6],
+      rock: 0x8d97a6, // Piedra fría
+      snow: 0xf3f7fb, // Caras que miran hacia arriba: nieve
+      extras: [{ kind: 'snowMounds', count: 170 }],
+      particles: { kind: 'snow', count: 1400 },
+    },
+  },
+  {
+    id: 4,
+    name: 'Bosque Místico',
+    resistance: 50,
+    woodPerTree: 18,
+    valuePerUnit: 15,
+    unlockAt: 10000,
+    seed: 7777,
+    treeCount: 1150,
+    treeSpacing: 2.5,
+    treeHeight: [0.9, 1.7],
+    treeWidth: [0.85, 1.35],
+    groveCount: 30,
+    baseDensity: 0.36,
+    pineRatio: 0.45,
+    rockCount: 28,
+    decorativeTreeCount: 800,
+    deadTreeRatio: 0.16,
+    bushCount: 300,
+    smallPlantCount: 1400,
+    flowerRatio: 1,
+    fallenLogCount: 22,
+    fog: { near: 45, far: 220 }, // Niebla de color lavanda
+    models: MODELS,
+    proceduralTrees: { pines: PROCEDURAL_TREES.pines, round: [...PROCEDURAL_TREES.round, 'proc_retorcido', 'proc_retorcido'] }, // Árboles retorcidos
+    // Hondonadas donde se acumula la niebla y algún montículo
+    terrain: { waves: 1.3, hollows: { count: 14, height: [-2.4, -1.3], radius: [7.5, 11] }, hills: { count: 6, height: [1, 2], radius: [5, 8] } },
+    landmark: { kind: 'spiritTree', name: 'Árbol del alma', x: 36, z: 26, radius: 9, clear: 13, plantClear: 1.6 },
+    paths: [
+      { points: [[3, 9], [12, 14], [20, 19], [25, 21]] }, // Al árbol del alma
+      { points: [[1, 13], [-6, 30], [-2, 50]] },
+      { points: [[3, 4], [20, -8], [38, -12], [50, -24]] },
+    ],
+    colors: { sky: 0x7d6cb5, grass: 0x3f7a6c, meadow: 0x5b6ea3, forestFloor: 0x2b3d5b, hill: 0x4b5a8c, dirt: 0x6e5a7d },
+    light: { sun: 0xd9c8ff, sunIntensity: 1.7, ambient: 0xb7a6ff, ambientIntensity: 0.8 },
+    theme: {
+      foliage: [0x7b4fd1, 0x2fb6a6, 0xb04fc6, 0x3f8fd8, 0x5f3fb0, 0x27a39a],
+      bushes: [0x6a44b8, 0x2a9c95, 0x9a49b8],
+      grass: [0x3a9488, 0x4c7fb8, 0x5a63b0],
+      bark: 0x4e3d58, // Corteza oscura violácea
+      rock: 0x6a6f9e,
+      flowers: [0xfff07a, 0x7af7ff, 0xff8ae8],
+      extras: [{ kind: 'glowMushrooms', count: 260 }, { kind: 'crystals', count: 55 }],
+      particles: { kind: 'fireflies', count: 320 },
+    },
+  },
+  {
+    id: 5,
+    name: 'Bosque Ancestral',
+    resistance: 100,
+    woodPerTree: 25,
+    valuePerUnit: 30,
+    unlockAt: 50000,
+    seed: 9001,
+    treeCount: 500, // Árboles gigantes: menos, más separados y mucho más grandes
+    treeSpacing: 3.8,
+    treeHeight: [1.8, 2.7],
+    treeWidth: [1.7, 2.4],
+    groveCount: 22,
+    baseDensity: 0.45,
+    pineRatio: 0.5,
+    rockCount: 38,
+    rockScale: [1.1, 1.7], // Grandes peñascos cubiertos de musgo
+    decorativeTreeCount: 650,
+    decorativeScale: 1.8,
+    deadTreeRatio: 0.08,
+    bushCount: 380,
+    bushScale: [0.9, 1.5],
+    smallPlantCount: 1900,
+    plantScale: [1.3, 2.1], // Helechos grandes
+    flowerRatio: 0.2,
+    fallenLogCount: 30,
+    fallenLogScale: [1.3, 1.7], // Troncos caídos enormes
+    fog: { near: 65, far: 320 },
+    models: MODELS,
+    proceduralTrees: { pines: [...PROCEDURAL_TREES.pines, 'proc_secuoya', 'proc_secuoya', 'proc_secuoya'], round: PROCEDURAL_TREES.round }, // Secuoyas
+    // Terreno muy ondulado con grandes desniveles y colinas en el horizonte
+    terrain: { waves: 1.6, hills: { count: 18, height: [1.8, 3.0], radius: [10, 16] }, horizon: { count: 7, height: [28, 45], radius: [40, 55], distance: [240, 310] } },
+    landmark: { kind: 'elderTree', name: 'Árbol milenario', x: -30, z: 36, radius: 10, clear: 15, plantClear: 3.4 },
+    paths: [
+      { points: [[1, 13], [-8, 20], [-16, 25], [-19, 27]] }, // Al árbol milenario
+      { points: [[3, 4], [14, -18], [18, -40], [10, -52]] },
+      { points: [[3, 9], [26, 12], [42, 26], [50, 44]] },
+    ],
+    colors: { sky: 0xa8c49c, grass: 0x4c7a33, meadow: 0x5c8a3a, forestFloor: 0x2c4d24, hill: 0x47693a, dirt: 0x7a5a36 },
+    light: { sun: 0xfff2c8, sunIntensity: 2.0, ambient: 0xcfe5b8, ambientIntensity: 0.7 },
+    theme: {
+      foliage: [0x2f6b2a, 0x3d7d2c, 0x2a5e30, 0x4a8433, 0x34703a],
+      bushes: [0x3b7a2e, 0x2f6a34],
+      grass: [0x3f7d34, 0x4f8e3a, 0x2f6a2c],
+      bark: 0x6b3b26, // Corteza rojiza de los árboles antiguos
+      rock: 0x7c8a6a, // Piedra con musgo
+      extras: [{ kind: 'mushrooms', count: 220 }],
+      particles: { kind: 'pollen', count: 300 },
+    },
   },
 ];
+
+/** Bosque por id (el Verde si el id no existe). */
+export const forestById = (id) => FORESTS.find((f) => f.id === Number(id)) ?? FORESTS[0];
+
+// Viajar entre bosques (Fase 11A): poste indicador del campamento (E). Viajar es gratis.
+export const TRAVEL = {
+  key: 'KeyE',
+  post: { x: -4.5, z: 6.5 }, // Junto al punto de inicio, entre el camino y el aserradero
+  radius: 2.4, // Distancia (m) para poder usarlo
+};
 
 // ---------- Tala (Fase 6) ----------
 // Ataque con el hacha (del personaje): se puede golpear en cualquier momento, haya o no un
@@ -132,6 +339,7 @@ export const SALE = {
 export const WORKERS = {
   interval: 5, // Segundos para que UN trabajador produzca una unidad de madera
   storageCapacity: 100, // Unidades máximas en el almacén (al llenarse, dejan de producir)
+  woodForestId: 1, // Los trabajadores producen SIEMPRE madera del Bosque Verde (2 monedas), estés donde estés
   saveDelay: 30000, // ms: la producción se guarda como mucho cada 30 s (no en cada unidad)
   // Aserradero (variante moderada): cada nivel +10 % de ritmo por trabajador y, desde ciertos
   // niveles, cada ciclo entrega un LOTE de varias unidades (ritmo medio = 12 × (1 + 0,1·nivel)/min)
