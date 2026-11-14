@@ -105,15 +105,20 @@ export class Game {
     // main.js asigna onPauseChange / onLockHint para mostrar la pausa y la indicación.
     this.onPauseChange = () => {};
     this.onLockHint = () => {};
+    this.onShopChange = () => {}; // Tienda abierta/cerrada (Fase 8): main.js muestra el panel
     this.session = new PlaySession(this.cameraRig, this.player, {
       onPauseChange: (paused) => this.onPauseChange(paused),
       onLockHint: (show) => this.onLockHint(show),
+      onShopChange: (open) => this.onShopChange(open),
     });
     this.cameraRig.onLockChange = (locked) => this.session.lockChange(locked);
     this.cameraRig.onLockError = () => this.session.lockError();
     this.renderer.domElement.addEventListener('mousedown', (e) => this.session.pointerDown(e.button));
     window.addEventListener('mouseup', (e) => this.session.pointerUp(e.button));
-    window.addEventListener('keydown', (e) => this.session.keyDown(e.code));
+    window.addEventListener('keydown', (e) => {
+      if (e.repeat && e.code === 'KeyB') return; // Mantener B no abre y cierra la tienda sin parar
+      this.session.keyDown(e.code);
+    });
     window.addEventListener('blur', () => this.session.blur());
 
     this.ready = this.load(forestConfig);
@@ -168,6 +173,7 @@ export class Game {
 
   async load(forestConfig) {
     const [geometries] = await Promise.all([loadForestModels(forestConfig), this.player.load()]);
+    this.player.equipAxe(this.axeLevel ?? 1); // Por si el perfil se cargó antes que el modelo
     this.forest = createForest(forestConfig, geometries);
     this.scene.add(this.forest.group);
 
@@ -216,6 +222,12 @@ export class Game {
     else this.session.stop();
   }
 
+  /** Hacha del nivel guardado o recién comprado (1..3): cambia el modelo y el daño. */
+  setAxeLevel(level) {
+    this.axeLevel = Math.min(3, Math.max(1, Math.floor(level) || 1));
+    if (this.player.axeSocket) this.player.equipAxe(this.axeLevel);
+  }
+
   /** Nivel de la mochila del perfil del jugador (1..3). */
   setBackpackLevel(level) {
     this.backpack.setLevel(level);
@@ -251,6 +263,11 @@ export class Game {
   resetPlayerData() {
     this.backpack.clear();
     this.chopping?.wood.clear();
+  }
+
+  /** Botón "Cerrar" de la tienda (Fase 8). */
+  closeShop() {
+    this.session.closeShop();
   }
 
   /** Botón "Continuar" de la pausa (interacción del usuario: vuelve a capturar el cursor). */

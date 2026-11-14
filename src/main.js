@@ -3,12 +3,13 @@
 // FASE 2: flujo de registro, inicio de sesión, recuperación de sesión y cierre de sesión.
 // FASE 7A: la mochila se restaura al entrar y se guarda en Appwrite (progressSync.js).
 // FASE 7B: venta segura con F en el aserradero; la celebración solo llega tras confirmarla.
+// FASE 8: tienda con B: compras seguras de mejoras (hacha, mochila, aserradero).
 import './style.css';
 import { Game } from './game/Game.js';
 import * as api from './appwrite.js';
 import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
-import { nextUpgrade, saleValue } from './game/economy.js';
+import { nextUpgrade, purchaseOffer, saleValue, shopItems } from './game/economy.js';
 import { SaleCelebrationSequence } from './game/saleSequence.js';
 
 // La escena de prueba de la Fase 1 queda de fondo detrás de las pantallas.
@@ -23,6 +24,7 @@ let busy = false; // Evita enviar dos peticiones a la vez
 const sync = new ProgressSync({
   api: { getProfile: api.getProfile, save: api.saveProgressFields, probe: api.probeVersionGuard, classify: api.classifySaveError },
   saleValue,
+  purchaseOffer,
 });
 sync.onStatus = ui.showSaveStatus;
 
@@ -51,6 +53,59 @@ const SALE_MESSAGES = {
   [SAVE_STATUS.BLOCKED]: 'No se puede vender: los datos guardados no son válidos.',
 };
 game.onSellZoneChange = ui.showSellPrompt;
+
+// ---------- Tienda (Fase 8) ----------
+// Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
+// Comprar no cambia nada en el juego hasta que Appwrite confirma la compra (onPurchase).
+let shopBusy = null; // Mejora que se está comprando
+const renderShop = () => ui.renderShop(shopItems(sync.levels, sync.coins), sync.coins, shopBusy);
+const PURCHASE_MESSAGES = {
+  'saldo-insuficiente': 'No tienes monedas suficientes.',
+  'nivel-máximo': 'Esa mejora ya está al máximo.',
+  'en-curso': null, // Ya hay una operación en curso: no hace falta avisar
+  vacía: null,
+  [SAVE_STATUS.CONFLICT]: 'No se puede comprar: tu progreso cambió en otra sesión. Recarga la página.',
+  [SAVE_STATUS.CONDITION]: 'No se puede comprar: el guardado está desactivado (ver aviso).',
+  [SAVE_STATUS.BLOCKED]: 'No se puede comprar: los datos guardados no son válidos.',
+};
+game.onShopChange = (open) => {
+  ui.showShop(open);
+  if (open) renderShop();
+};
+ui.bindShopEvents({
+  onClose: () => game.closeShop(), // Clic del usuario: permite volver a capturar el cursor
+  onBuy: async (key) => {
+    if (shopBusy) return;
+    shopBusy = key;
+    renderShop();
+    const result = await sync.buy(key);
+    shopBusy = null;
+    renderShop();
+    if (result.ok) return; // onPurchase ya informó
+    if (result.pending) ui.showShopMessage('Sin respuesta de Appwrite: comprobando si la compra se completó…', true);
+    else {
+      const text = PURCHASE_MESSAGES[result.reason] ?? PURCHASE_MESSAGES[result.status];
+      if (text !== null) ui.showShopMessage(text ?? 'No se pudo completar la compra. No se ha cobrado nada.', true);
+    }
+  },
+});
+sync.onPurchase = (purchase) => {
+  // Efectos solo con la compra confirmada: hacha en la mano y daño, capacidad de la mochila
+  // (la aplica sync) o bonificación del aserradero (la usa la próxima venta)
+  if (purchase.key === 'axe') game.setAxeLevel(purchase.level);
+  ui.coinCounter.animateTo(purchase.coins);
+  ui.renderUpgradeProgress(nextUpgrade(sync.levels), purchase.coins);
+  ui.updateMenuCoins(purchase.coins, sync.totalCoinsEarned);
+  renderShop();
+  ui.flashShopCard(purchase.key);
+  const item = shopItems(purchase.levels, purchase.coins).find((i) => i.key === purchase.key);
+  ui.showShopMessage(`¡${item.name} nivel ${purchase.level}! ${item.effect}.`);
+  game.audio.playUi('sale_levelup'); // Sonido de recompensa ya integrado (Level Up 06)
+};
+sync.onPurchaseFailed = ({ reason }) => {
+  ui.showShopMessage(`La compra no se completó (${reason}). No se ha cobrado nada.`, true);
+  renderShop();
+};
 game.onSellRequest = async () => {
   const result = await sync.sell();
   if (result.ok || result.reason === 'en-curso') return; // La celebración la dispara onSale
@@ -92,6 +147,7 @@ function enterMenu(profile) {
   // Si la lectura hubiera fallado no se llegaría aquí: nunca se confunde con una mochila vacía.
   const { damaged } = sync.attach(currentUser.$id, profile, game.backpack);
   ui.coinCounter.set(sync.coins); // Saldo real guardado, sin animación
+  game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), sync.coins);
   if (damaged) ui.showAuthMessage('Los datos guardados de tu mochila no son válidos. No se modificarán hasta revisarlos.', 'error');
   ui.clearAuthMessage();

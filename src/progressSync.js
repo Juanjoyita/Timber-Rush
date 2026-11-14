@@ -4,6 +4,10 @@
 // "progress" del usuario). No conoce el DOM ni las mecánicas de tala: recibe las funciones de la
 // API (appwrite.js) y avisa de su estado con onStatus(estado, detalle).
 //
+// Compra (Fase 8): misma maquinaria que la venta. Resta el precio de coins (valor absoluto) y
+// sube la columna del nivel en una sola escritura atómica; nunca toca totalCoinsEarned.
+// onPurchase(compra) se emite una única vez y solo con la compra confirmada.
+//
 // Venta (Fase 7B): una sola escritura atómica con la misma protección por versión que vacía lo
 // vendido (mochila y almacén) y fija coins / totalCoinsEarned en valores ABSOLUTOS calculados
 // desde el último estado confirmado. Una venta nunca se reenvía automáticamente: si no hay
@@ -89,15 +93,18 @@ export class ProgressSync {
    *                probe(userId, currentVersion), classify(error) }
    * @param clock { now(), setTimeout(fn, ms), clearTimeout(id) } (se sustituye en las pruebas)
    */
-  constructor({ api, saleValue = null, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
+  constructor({ api, saleValue = null, purchaseOffer = null, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
     this.api = api;
     this.saleValue = saleValue; // (contenido, nivelAserradero) => { sold, units, coins } (economy.js)
+    this.purchaseOffer = purchaseOffer; // (clave, niveles) => { column, level, cost } | { maxed } | null
     this.clock = clock;
     this.s = settings;
     this.onStatus = () => {}; // (estado, detalle) => void
     this.onSale = () => {}; // (venta confirmada) => void — una sola vez por venta
     this.onSaleFailed = () => {}; // (venta, motivo) => void
-    this.saleSeq = 0; // Identificador de cada venta (no se reinicia al cambiar de cuenta)
+    this.onPurchase = () => {}; // (compra confirmada) => void — una sola vez por compra
+    this.onPurchaseFailed = () => {}; // (compra, motivo) => void (solo resultados diferidos)
+    this.saleSeq = 0; // Identificador de cada operación (no se reinicia al cambiar de cuenta)
     this.reset();
   }
 
@@ -123,7 +130,7 @@ export class ProgressSync {
     this.coins = 0; // Monedas disponibles CONFIRMADAS en Appwrite (fuente de verdad local)
     this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
     this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
-    this.saleInFlight = false;
+    this.opInFlight = false; // Venta o compra en curso (nunca dos a la vez)
     this.status = SAVE_STATUS.IDLE;
   }
 
@@ -301,25 +308,65 @@ export class ProgressSync {
    * Espera a que termine cualquier guardado en curso. Si ya hay una venta en curso, no hace nada.
    * @returns { ok, sale } si se confirmó; { ok: false, reason | pending } si no.
    */
-  async sell() {
+  sell() {
+    return this.runOperation('sale');
+  }
+
+  // ---------- Comprar (Fase 8) ----------
+
+  /**
+   * Compra el siguiente nivel de una mejora ('axe', 'backpack', 'sawmill') con el saldo
+   * CONFIRMADO, en una escritura condicional y atómica.
+   * @returns { ok, purchase } si se confirmó; { ok: false, reason | pending } si no
+   *          (reason: 'saldo-insuficiente', 'nivel-máximo', 'no-disponible', 'en-curso'…)
+   */
+  buy(key) {
+    return this.runOperation('purchase', key);
+  }
+
+  /** Venta o compra: una a la vez, esperando a que termine cualquier guardado en curso. */
+  async runOperation(mode, arg) {
     if (!this.attached) return { ok: false, reason: 'sin-sesión' };
-    if (this.saleInFlight) return { ok: false, reason: 'en-curso' };
+    if (this.opInFlight) return { ok: false, reason: 'en-curso' };
     if (this.halted) return { ok: false, reason: this.status };
-    this.saleInFlight = true;
+    this.opInFlight = true;
     try {
       while (this.inFlight) await this.inFlight; // Una sola escritura a la vez
       if (!this.attached) return { ok: false, reason: 'sin-sesión' };
       if (this.halted) return { ok: false, reason: this.status };
       if (this.timer) this.clock.clearTimeout(this.timer);
       if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
-      this.timer = this.retryTimer = null; // La venta escribe el estado completo actual
-      this.inFlight = this.write('sale').finally(() => {
+      this.timer = this.retryTimer = null; // La operación escribe el estado completo actual
+      this.inFlight = this.write(mode, arg).finally(() => {
         this.inFlight = null;
       });
       return await this.inFlight;
     } finally {
-      this.saleInFlight = false;
+      this.opInFlight = false;
     }
+  }
+
+  /** Prepara la compra: precio, nivel nuevo y datos que quedarán en Appwrite. */
+  planPurchase(key) {
+    const offer = this.purchaseOffer?.(key, this.levels);
+    if (!offer) return { error: 'no-disponible' };
+    if (offer.maxed) return { error: 'nivel-máximo' };
+    if (this.coins < offer.cost) return { error: 'saldo-insuficiente' };
+    const data = { ...this.snapshot(), coins: this.coins - offer.cost, [offer.column]: offer.level };
+    const op = { kind: 'purchase', id: ++this.saleSeq, key, column: offer.column, level: offer.level, cost: offer.cost, done: false };
+    return { data, op };
+  }
+
+  /** La compra está confirmada: nuevo saldo y nivel en local, y aviso (una sola vez). */
+  applyPurchase(op, data) {
+    this.coins = data.coins; // totalCoinsEarned no cambia al gastar
+    this.levels = { ...this.levels, [op.column]: op.level };
+    if (op.column === 'backpackLevel') {
+      this.restoring = true; // Ya está guardado: no es un cambio pendiente
+      this.backpack.setLevel(op.level);
+      this.restoring = false;
+    }
+    this.onPurchase({ id: op.id, key: op.key, level: op.level, cost: op.cost, coins: this.coins, levels: { ...this.levels } });
   }
 
   /** Prepara la venta: qué se vende, cuánto vale y los datos que quedarán en Appwrite. */
@@ -338,14 +385,19 @@ export class ProgressSync {
       coins: this.coins + coins,
       totalCoinsEarned: this.totalCoinsEarned + coins,
     };
-    const sale = { id: ++this.saleSeq, fromBackpack, storageAfter, units, earned: coins, done: false };
+    const sale = { kind: 'sale', id: ++this.saleSeq, fromBackpack, storageAfter, units, earned: coins, done: false };
     return { data, sale };
   }
 
-  /** La venta está confirmada: se aplica en local y se celebra (una sola vez). */
-  applySale(sale, data) {
-    if (sale.done) return;
-    sale.done = true;
+  /** La operación (venta o compra) está confirmada: se aplica en local una sola vez. */
+  applySale(op, data) {
+    if (op.done) return;
+    op.done = true;
+    if (op.kind === 'purchase') {
+      this.applyPurchase(op, data);
+      return;
+    }
+    const sale = op;
     const before = this.coins;
     this.coins = data.coins;
     this.totalCoinsEarned = data.totalCoinsEarned;
@@ -361,15 +413,17 @@ export class ProgressSync {
    * deferred = el resultado se conoce más tarde (la venta había quedado pendiente): se avisa con
    * onSaleFailed. Si se sabe en la misma llamada a sell(), el aviso lo da su resultado.
    */
-  saleFailed(sale, reason, deferred = false) {
-    if (!sale || sale.done) return;
-    sale.done = true;
-    if (deferred) this.onSaleFailed({ id: sale.id, reason });
+  saleFailed(op, reason, deferred = false) {
+    if (!op || op.done) return;
+    op.done = true;
+    if (!deferred) return;
+    if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
+    else this.onSaleFailed({ id: op.id, reason });
   }
 
-  // ---------- Escritura (guardar o vender) ----------
+  // ---------- Escritura (guardar, vender o comprar) ----------
 
-  async write(mode) {
+  async write(mode, arg) {
     const userId = this.userId;
     const stale = () => this.userId !== userId; // Se cerró sesión mientras se esperaba
     try {
@@ -420,6 +474,13 @@ export class ProgressSync {
           return { ok: false, reason: 'vacía', status: this.status };
         }
         ({ data: snapshot, sale } = plan);
+      } else if (mode === 'purchase') {
+        const plan = this.planPurchase(arg);
+        if (plan.error) {
+          this.confirmSaved();
+          return { ok: false, reason: plan.error, status: this.status };
+        }
+        ({ data: snapshot, op: sale } = plan);
       } else {
         if (!this.dirty) return this.confirmSaved(); // La verificación anterior ya lo dejó guardado
         snapshot = this.snapshot();
@@ -431,7 +492,7 @@ export class ProgressSync {
       const expected = this.version;
       this.dirty = false;
       this.dirtySince = null;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? 'Vendiendo…' : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? (sale.kind === 'purchase' ? 'Comprando…' : 'Vendiendo…') : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);
@@ -464,7 +525,8 @@ export class ProgressSync {
       this.confirmed = pickSaved(snapshot);
       if (sale) {
         this.applySale(sale, snapshot);
-        return { ...this.confirmSaved(), ok: true, sale: { id: sale.id, earned: sale.earned } };
+        const info = sale.kind === 'purchase' ? { purchase: { id: sale.id, key: sale.key, level: sale.level } } : { sale: { id: sale.id, earned: sale.earned } };
+        return { ...this.confirmSaved(), ok: true, ...info };
       }
       return this.confirmSaved();
     } catch (error) {

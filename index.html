@@ -165,6 +165,23 @@
         </div>
       </div>
 
+      <!-- Tienda (Fase 8): B la abre en cualquier lugar; el juego queda en pausa y el cursor libre -->
+      <div id="shop" class="shop-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="shop-title">
+        <div class="shop-panel">
+          <header class="shop-header">
+            <h2 id="shop-title" class="shop-title">Tienda</h2>
+            <p class="shop-balance">Saldo: <strong id="shop-coins">0</strong> monedas</p>
+            <button type="button" id="btn-shop-close" class="btn btn-secondary btn-small" aria-label="Cerrar la tienda">Cerrar ✕</button>
+          </header>
+          <div id="shop-items" class="shop-items"></div>
+          <div class="shop-soon">
+            <div class="shop-card is-locked"><p class="shop-card-name">Ropa del Worker</p><p class="shop-card-effect">Cascos, chalecos, botas y más</p><p class="shop-soon-tag">Próximamente</p></div>
+          </div>
+          <p id="shop-message" class="shop-message" role="status" aria-live="polite"></p>
+          <p class="shop-hint"><kbd>B</kbd> o <kbd>ESC</kbd> para cerrar · Las mejoras se guardan en tu cuenta</p>
+        </div>
+      </div>
+
       <!-- Sobre la plataforma de venta -->
       <p id="sell-prompt" class="game-prompt hidden"><kbd>F</kbd> Vender madera</p>
       <p id="sale-message" class="game-toast hidden" role="alert"></p>

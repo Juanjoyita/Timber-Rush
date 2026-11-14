@@ -274,7 +274,7 @@ export function renderUpgradeProgress(next, coins) {
   const ready = coins >= next.cost;
   // Solo informativo: comprar (y subir de nivel) será una acción explícita en la tienda (Fase 8)
   $('upgrade-label').textContent = ready
-    ? `${next.name} — ¡Ya puedes comprar esta mejora en la tienda!`
+    ? `${next.name} — ¡Ya puedes comprar esta mejora en la tienda! (B)`
     : `${next.name} — ${formatNumber(coins)} / ${formatNumber(next.cost)} monedas`;
   $('upgrade-fill').style.width = `${Math.min(100, (coins / next.cost) * 100)}%`;
   box.classList.toggle('is-ready', ready);
@@ -299,6 +299,85 @@ export function showSaleMessage(text) {
 export function updateMenuCoins(coins, totalCoinsEarned) {
   $('menu-coins').textContent = formatNumber(coins);
   $('menu-total').textContent = formatNumber(totalCoinsEarned);
+}
+
+// ---------- Tienda (Fase 8) ----------
+
+/** Muestra u oculta el panel de la tienda. */
+export function showShop(open) {
+  $('shop').classList.toggle('hidden', !open);
+  if (open) showShopMessage('');
+}
+
+/**
+ * Dibuja las tarjetas de la tienda (datos de economy.shopItems con el saldo CONFIRMADO).
+ * @param busyKey mejora que se está comprando (su botón muestra "Comprando…" y nada se puede pulsar)
+ */
+export function renderShop(items, coins, busyKey = null) {
+  $('shop-coins').textContent = formatNumber(coins);
+  const box = $('shop-items');
+  box.replaceChildren(
+    ...items.map((item) => {
+      const card = document.createElement('div');
+      card.className = `shop-card${item.maxed ? ' is-maxed' : ''}${item.available ? '' : ' is-locked'}`;
+      card.dataset.key = item.key;
+      const line = (cls, text, tag = 'p') => {
+        const el = document.createElement(tag);
+        el.className = cls;
+        el.textContent = text;
+        return el;
+      };
+      card.append(line('shop-card-name', item.name));
+      card.append(line('shop-card-level', item.maxed ? `Nivel ${item.level} · máximo` : `Nivel ${item.level} → ${item.nextLevel}`));
+      const effect = document.createElement('p');
+      effect.className = 'shop-card-effect';
+      effect.append(item.effect);
+      if (item.nextEffect) {
+        effect.append(' → ');
+        const strong = document.createElement('strong');
+        strong.textContent = item.nextEffect;
+        effect.append(strong);
+      }
+      card.append(effect);
+      if (!item.available) {
+        card.append(line('shop-soon-tag', 'Fase 9'));
+      } else if (item.maxed) {
+        card.append(line('shop-soon-tag', '¡Nivel máximo!'));
+      } else {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-primary btn-small';
+        button.dataset.buy = item.key;
+        button.disabled = Boolean(busyKey) || !item.affordable;
+        button.textContent = busyKey === item.key ? 'Comprando…' : `Comprar · ${formatNumber(item.cost)}`;
+        card.append(button);
+        if (!item.affordable) card.append(line('shop-card-missing', `Te faltan ${formatNumber(item.missing)} monedas`));
+      }
+      return card;
+    })
+  );
+}
+
+/** Mensaje bajo las tarjetas (compra realizada o motivo por el que no se pudo). */
+export function showShopMessage(text, error = false) {
+  const el = $('shop-message');
+  el.textContent = text;
+  el.classList.toggle('is-error', error);
+}
+
+/** Destello de la tarjeta recién comprada. */
+export function flashShopCard(key) {
+  const card = $('shop-items').querySelector(`[data-key="${key}"]`);
+  if (card) restartClass(card, 'is-bought');
+}
+
+/** Conecta los botones de la tienda (comprar delegando en el contenedor, y cerrar). */
+export function bindShopEvents({ onBuy, onClose }) {
+  $('shop-items').addEventListener('click', (e) => {
+    const button = e.target.closest('[data-buy]');
+    if (button && !button.disabled) onBuy(button.dataset.buy);
+  });
+  $('btn-shop-close').addEventListener('click', onClose);
 }
 
 // ---------- Eventos ----------

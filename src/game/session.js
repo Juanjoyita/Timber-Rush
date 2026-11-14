@@ -9,6 +9,9 @@
 // - Si se pierde el cursor (ESC, cambio de ventana…), se pausa y se detiene el ataque.
 // - Si el navegador no deja capturar el cursor, se muestra "Haz clic para controlar la cámara".
 // - Atacar (y por tanto talar) solo es posible jugando, sin pausa y con el cursor capturado.
+// - Tienda (Fase 8): B la abre (jugando y sin pausa) y B o ESC la cierran. Con la tienda abierta
+//   la simulación se congela (como en la pausa) y el cursor queda libre para hacer clic, pero no
+//   se muestra el panel de pausa. Al cerrarla se vuelve a capturar el cursor.
 // No depende del renderizado: se puede probar sin navegador.
 export class PlaySession {
   /**
@@ -16,11 +19,13 @@ export class PlaySession {
    * @param player     Player (setEnabled / resetInput)
    * @param callbacks  { onPauseChange(enPausa), onLockHint(mostrar) } para la interfaz
    */
-  constructor(cameraRig, player, { onPauseChange = () => {}, onLockHint = () => {} } = {}) {
+  constructor(cameraRig, player, { onPauseChange = () => {}, onLockHint = () => {}, onShopChange = () => {} } = {}) {
     this.cameraRig = cameraRig;
     this.player = player;
     this.onPauseChange = onPauseChange;
     this.onLockHint = onLockHint;
+    this.onShopChange = onShopChange;
+    this.inShop = false;
     this.playing = false;
     this.paused = false;
     this.attackHeld = false;
@@ -54,6 +59,10 @@ export class PlaySession {
   /** Volver al menú principal: libera el cursor sin pausar. */
   stop() {
     this.playing = false; // Primero: así la pérdida del cursor no se interpreta como pausa
+    if (this.inShop) {
+      this.inShop = false;
+      this.onShopChange(false);
+    }
     this.paused = false;
     this.setActiveControls(false);
     this.onPauseChange(false);
@@ -62,7 +71,7 @@ export class PlaySession {
   }
 
   pause() {
-    if (!this.playing || this.paused) return; // Idempotente: ESC + pointerlockchange = una sola pausa
+    if (!this.playing || this.paused || this.inShop) return; // Idempotente: ESC + pointerlockchange = una sola pausa
     this.paused = true;
     this.setActiveControls(false);
     this.onLockHint(false);
@@ -79,6 +88,31 @@ export class PlaySession {
     this.cameraRig.requestLock();
   }
 
+  // ---------- Tienda (Fase 8) ----------
+
+  /** Abre la tienda: congela la simulación y libera el cursor (sin panel de pausa). */
+  openShop() {
+    if (!this.active) return false;
+    this.inShop = true;
+    this.paused = true;
+    this.setActiveControls(false);
+    this.onLockHint(false);
+    this.onShopChange(true);
+    this.cameraRig.releaseLock();
+    return true;
+  }
+
+  /** Cierra la tienda y vuelve al juego (pide de nuevo el cursor). */
+  closeShop() {
+    if (!this.inShop) return false;
+    this.inShop = false;
+    this.paused = false;
+    this.setActiveControls(true);
+    this.onShopChange(false);
+    this.cameraRig.requestLock(); // Si el navegador no lo permite, se mostrará "Haz clic…"
+    return true;
+  }
+
   // ---------- Eventos (los conecta Game.js) ----------
 
   pointerDown(button) {
@@ -92,7 +126,13 @@ export class PlaySession {
   }
 
   keyDown(code) {
-    if (code === 'Escape') this.pause();
+    if (code === 'Escape') {
+      if (this.inShop) this.closeShop();
+      else this.pause();
+    } else if (code === 'KeyB') {
+      if (this.inShop) this.closeShop();
+      else this.openShop();
+    }
   }
 
   lockChange(locked) {
@@ -101,7 +141,9 @@ export class PlaySession {
       return;
     }
     // Cursor perdido: nada de ataque ni teclas pulsadas; si se estaba jugando, pausa
+    // (en la tienda el cursor se libera a propósito: no es una pausa)
     this.attackHeld = false;
+    if (this.inShop) return;
     this.player.resetInput();
     this.pause();
   }

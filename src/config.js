@@ -83,16 +83,25 @@ export const BACKPACK = {
 };
 
 // ---------- Economía (Fase 7B: venta) ----------
-// Precios de las mejoras APROBADOS en la planificación (solo datos: la tienda y las compras se
-// implementan en la Fase 8). Clave = nivel que se compra.
+// Precios de las mejoras (clave = nivel que se compra). Hacha y mochila: ×3 respecto a los
+// iniciales (50/150 y 100/300) para que comprar sea más difícil (decisión del director,
+// 14-11-2026). Aserradero y trabajadores: precios originales aprobados.
 export const UPGRADES = {
-  axe: { name: 'Hacha', costs: { 2: 50, 3: 150 } }, // Niveles 1..3 (daño 1 / 2 / 4)
-  backpack: { name: 'Mochila', costs: { 2: 100, 3: 300 } }, // Capacidad 20 → 40 → 80
+  axe: { name: 'Hacha', costs: { 2: 150, 3: 450 } }, // Niveles 1..3 (daño 1 / 2 / 4)
+  backpack: { name: 'Mochila', costs: { 2: 300, 3: 900 } }, // Capacidad 20 → 40 → 80
   workers: { name: 'Trabajador', costs: { 1: 500, 2: 1000 } }, // 0..2 trabajadores
   sawmill: {
     name: 'Aserradero',
     costs: { 1: 2000, 2: 5000, 3: 10000, 4: 20000, 5: 40000, 6: 75000, 7: 125000, 8: 200000, 9: 350000, 10: 500000 },
   },
+};
+
+// Tienda (Fase 8): se abre con B en cualquier lugar. Qué se puede comprar ya y en qué columna
+// de la fila de progreso se guarda cada mejora. Los trabajadores llegan en la Fase 9.
+export const SHOP = {
+  key: 'KeyB',
+  purchasable: ['axe', 'backpack', 'sawmill'],
+  columns: { axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers' },
 };
 
 export const ECONOMY = {

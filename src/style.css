@@ -675,6 +675,145 @@ kbd {
   background: rgba(20, 35, 18, 0.65);
 }
 
+/* ===== Tienda (Fase 8) ===== */
+.shop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(20, 35, 18, 0.6);
+  pointer-events: auto; /* El cursor está libre: aquí sí se hace clic */
+}
+
+.shop-panel {
+  width: min(100%, 760px);
+  max-height: 100%;
+  overflow-y: auto;
+  padding: clamp(16px, 3vw, 26px);
+  border-radius: var(--radio);
+  background: rgba(47, 74, 44, 0.97);
+  border: 3px solid var(--marron);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.shop-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+}
+
+.shop-title {
+  font-size: clamp(1.4rem, 4vw, 1.9rem);
+  color: var(--dorado);
+  margin-right: auto;
+}
+
+.shop-balance {
+  font-weight: 600;
+}
+
+.shop-balance strong {
+  color: var(--dorado);
+  font-variant-numeric: tabular-nums;
+}
+
+.shop-items,
+.shop-soon {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+}
+
+.shop-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  /* Tarjeta facetada (Low Poly) */
+  clip-path: polygon(0 6%, 6% 0, 100% 0, 100% 94%, 94% 100%, 0 100%);
+  background: linear-gradient(155deg, rgba(255, 255, 255, 0.08) 0 30%, transparent 30%), rgba(20, 35, 18, 0.55);
+  border-left: 4px solid var(--verde-claro);
+}
+
+.shop-card.is-maxed {
+  border-left-color: var(--dorado);
+}
+
+.shop-card.is-locked {
+  border-left-color: #8a8f86;
+  opacity: 0.7;
+}
+
+.shop-card.is-bought {
+  animation: shop-bought 0.7s ease-out;
+}
+
+@keyframes shop-bought {
+  0% { transform: scale(1); filter: brightness(1); }
+  35% { transform: scale(1.04); filter: brightness(1.35); }
+  100% { transform: scale(1); filter: brightness(1); }
+}
+
+.shop-card-name {
+  font-weight: 800;
+  font-size: 1.05rem;
+}
+
+.shop-card-level {
+  font-size: 0.8rem;
+  color: #cfd8c4;
+}
+
+.shop-card-effect {
+  font-size: 0.85rem;
+  color: #d9efc4;
+}
+
+.shop-card-effect strong {
+  color: var(--dorado);
+}
+
+.shop-card .btn {
+  margin-top: auto;
+}
+
+.shop-card-missing,
+.shop-soon-tag {
+  font-size: 0.8rem;
+  color: #f0c98f;
+  font-weight: 600;
+}
+
+.shop-message {
+  min-height: 1.2em;
+  text-align: center;
+  font-weight: 700;
+  color: var(--dorado);
+}
+
+.shop-message.is-error {
+  color: #f0a08f;
+}
+
+.shop-hint {
+  text-align: center;
+  font-size: 0.8rem;
+  color: #cfd8c4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shop-card.is-bought {
+    animation: none;
+  }
+}
+
 /* ===== Mensajes de estado ===== */
 .message {
   padding: 10px 12px;
