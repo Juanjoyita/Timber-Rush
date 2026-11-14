@@ -1,10 +1,15 @@
 // Player.js — Personaje (Worker de Quaternius): modelo GLB, animaciones, controles,
 // hacha equipada y sincronización con su cuerpo físico de cannon-es.
-// FASE 5: caminar (WASD), correr (Shift + WASD) e Idle. La tala llega en la Fase 6.
+// FASE 5: caminar (WASD), correr (Shift + WASD) e Idle.
+// FASE 6: ataque con el hacha (TreeChopping_Loop) mientras se mantiene el clic izquierdo.
+//         El ataque es del personaje y no depende de que haya un árbol: golpea al aire si no
+//         hay nada. En cada impacto avisa con onAttackImpact(ataque) y quien lo recibe (la tala,
+//         en chopping.js) decide si alcanza a algo.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { PLAYER_RADIUS } from './physics.js';
 import { createAxe } from './axes.js';
+import { ATTACK } from '../config.js';
 
 // worker.glb se genera con herramientas/retarget_worker.py (Blender): contiene el Worker
 // con sus animaciones originales Idle/Walk/Run + TreeChopping_Loop adaptada de UAL2.
@@ -13,7 +18,7 @@ const ANIMATIONS = {
   idle: 'Idle',
   walk: 'Walk',
   run: 'Run',
-  chop: 'TreeChopping_Loop', // Se carga ya, pero se usará en la Fase 6
+  chop: 'TreeChopping_Loop', // Golpe de hacha (Fase 6)
 };
 
 export const PLAYER_SETTINGS = {
@@ -26,6 +31,7 @@ export const PLAYER_SETTINGS = {
   acceleration: 10, // Rapidez para alcanzar la velocidad deseada (mayor = más brusco)
   turnSpeed: 12, // Rapidez de giro hacia la dirección del movimiento
   fadeTime: 0.2, // Transición entre animaciones (s)
+  chopFadeTime: 0.15, // Transición al empezar a golpear (s); al soltar se usa fadeTime
 };
 
 // Soporte del hacha en el hueso de la mano derecha (medido en el espacio local de WristR):
@@ -110,6 +116,15 @@ export class Player {
     this.axeSocket = null;
     this.axe = null;
 
+    // Ataque con el hacha
+    this.attackHeld = false; // Clic izquierdo mantenido (lo indica el juego cada fotograma)
+    this.attackAim = null; // Punto opcional hacia el que girarse (ayuda de puntería) o null
+    this.attacking = false; // Golpeando en este momento
+    this.onAttackImpact = null; // (ataque) => void. Lo asigna el juego
+    this.attackPrevTime = 0;
+    // Datos del golpe (se reutiliza el mismo objeto en cada impacto)
+    this.attackInfo = { origin: new THREE.Vector3(), direction: new THREE.Vector3(), reach: ATTACK.reach, halfAngle: ATTACK.halfAngle, damage: 1 };
+
     // Vectores reutilizables (evita crear objetos en cada fotograma)
     this.cameraForward = new THREE.Vector3();
     this.moveDir = new THREE.Vector3();
@@ -193,7 +208,27 @@ export class Player {
 
   setEnabled(enabled) {
     this.enabled = enabled;
-    if (!enabled) this.resetInput();
+    if (!enabled) {
+      this.resetInput();
+      this.setAttack(false);
+      this.attacking = false;
+    }
+  }
+
+  // ---------- Ataque ----------
+
+  get isAttacking() {
+    return this.attacking;
+  }
+
+  /**
+   * El juego indica cada fotograma si el clic izquierdo está mantenido y, opcionalmente, un
+   * punto hacia el que girarse (p. ej. el árbol al que se apunta). Sin punto, el personaje
+   * golpea hacia donde mira la cámara.
+   */
+  setAttack(held, aimPoint = null) {
+    this.attackHeld = held;
+    this.attackAim = held ? aimPoint : null;
   }
 
   handleKey(event, pressed) {
@@ -228,6 +263,24 @@ export class Player {
     this.cameraForward.normalize();
     computeMoveDirection(this.input, this.cameraForward, this.moveDir);
     const wantsToMove = this.moveDir.lengthSq() > 0;
+
+    // Ataque: mientras se mantiene el clic y no se pulsa ninguna tecla de movimiento
+    // (moverse lo cancela). Al soltar, la animación vuelve a Idle con una transición suave.
+    const attacking = this.attackHeld && !wantsToMove;
+    if (attacking && !this.attacking) this.attackPrevTime = 0;
+    this.attacking = attacking;
+    if (attacking) {
+      // Quieto, girado hacia el objetivo (si lo hay) o hacia donde mira la cámara
+      const v = this.body.velocity;
+      v.x = 0;
+      v.z = 0;
+      this.body.linearFactor.set(0, 1, 0);
+      const aim = this.attackAim;
+      const face = aim ? Math.atan2(aim.x - this.body.position.x, aim.z - this.body.position.z) : Math.atan2(this.cameraForward.x, this.cameraForward.z);
+      this.yaw = dampAngle(this.yaw, face, s.turnSpeed, dt);
+      this.play('chop', s.chopFadeTime);
+      return;
+    }
     const running = wantsToMove && this.input.run;
     const targetSpeed = running ? s.runSpeed : s.walkSpeed;
     const v = this.body.velocity;
@@ -275,6 +328,30 @@ export class Player {
     this.model.position.set(p.x, p.y - PLAYER_RADIUS, p.z);
     this.model.rotation.y = this.yaw;
     this.mixer.update(dt);
+    this.detectAttackImpact();
+  }
+
+  /**
+   * Impacto del hacha: una sola vez por ciclo de TreeChopping_Loop, cuando el tiempo de la
+   * animación cruza el instante del golpe (la mano se frena en seco). Ocurre aunque no haya
+   * nada delante: el ataque informa de dónde, hacia dónde, con qué alcance y con qué daño.
+   * Mantener el clic no aplica daño continuo; soltar antes del golpe no aplica nada.
+   */
+  detectAttackImpact() {
+    const chop = this.actions.chop;
+    if (!this.attacking || this.currentAction !== chop) return;
+    const t = chop.time;
+    const prev = this.attackPrevTime;
+    const hitAt = ATTACK.impactTime;
+    // Cruce normal (prev < golpe ≤ t) o, si el bucle volvió a empezar, cruce a través del final
+    const crossed = prev <= t ? prev < hitAt && t >= hitAt : prev < hitAt || t >= hitAt;
+    this.attackPrevTime = t;
+    if (!crossed || chop.getEffectiveWeight() <= 0.5) return;
+    const a = this.attackInfo;
+    a.origin.copy(this.model.position);
+    a.direction.set(Math.sin(this.yaw), 0, Math.cos(this.yaw)); // Hacia donde mira el personaje
+    a.damage = this.axe?.userData.damage ?? 1; // Según el nivel del hacha equipada
+    this.onAttackImpact?.(a);
   }
 
   get position() {

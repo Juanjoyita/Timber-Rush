@@ -13,10 +13,16 @@
 # - Ambos esqueletos están en pose T en reposo, pero sus huesos tienen ejes locales distintos.
 #   Por eso NO se copian rotaciones locales: se copia el giro en ESPACIO MUNDIAL respecto al
 #   reposo de cada hueso:  giro_destino = (pose_origen · reposo_origen⁻¹) · reposo_destino
-# - Cadera: además de girar, se traslada lo mismo que la pelvis de origen (escalado por la altura).
+# - Pelvis: en el Worker la pelvis real es el hueso "Body" (padre de Hips Y de los muslos; es el
+#   único que mueven sus animaciones originales). La pelvis de origen se aplica a Body (giro y
+#   traslación escalada por la altura); Hips sigue a Body con su relación de reposo, igual que en
+#   Idle/Walk/Run. Si se aplicara a Hips, Body y los muslos se quedarían quietos mientras la columna
+#   gira, y la piel del abdomen bajo (pesos repartidos entre Body/Hips/Abdomen/muslos) se cizallaría.
 # - Piernas: el Worker tiene los pies como controles de IK (Foot y PT cuelgan de Root).
 #   Los pies se dejan fijos en el suelo y las piernas se resuelven con IK analítica de 2 huesos,
-#   con la rodilla orientada hacia el control PT. Así los pies no se deslizan.
+#   con la rodilla orientada hacia el control PT. Así los pies no se deslizan. Cada hueso de la
+#   pierna parte de la orientación que hereda de su padre (no de la de reposo) para no torcerse
+#   respecto a la pelvis.
 # - Se exporta un GLB con: Idle, Walk, Run (originales del Worker) + TreeChopping_Loop.
 import sys
 import bpy
@@ -46,7 +52,7 @@ assert W.matrix_world == Matrix.Identity(4) and U.matrix_world == Matrix.Identit
 
 # ---------- Tabla de correspondencia (origen UAL2 → destino Worker) ----------
 MAP = {
-    'pelvis': 'Hips', 'spine_01': 'Abdomen', 'spine_02': 'Torso', 'spine_03': 'Chest',
+    'pelvis': 'Body', 'spine_01': 'Abdomen', 'spine_02': 'Torso', 'spine_03': 'Chest',
     'neck_01': 'Neck', 'Head': 'Head',
 }
 for s, t in (('l', 'L'), ('r', 'R')):
@@ -70,7 +76,7 @@ for s in MAP:
 
 rest_w = {b.name: b.matrix_local.copy() for b in W.data.bones}
 rest_u = {b.name: b.matrix_local.copy() for b in U.data.bones}
-height_ratio = rest_w['Hips'].translation.z / rest_u['pelvis'].translation.z
+height_ratio = rest_w['Body'].translation.z / rest_u['pelvis'].translation.z
 
 # Orden padres → hijos
 order = []
@@ -93,9 +99,11 @@ def two_bone_ik(hip, ankle, l1, l2, pole):
     sin_a = (1 - cos_a * cos_a) ** 0.5
     return hip + (u * cos_a + w * sin_a) * l1
 
-def aim(rest_matrix, rest_vec, new_vec, head):
-    """Gira la orientación de reposo lo mínimo para que rest_vec pase a apuntar a new_vec."""
-    rot = rest_vec.rotation_difference(new_vec) @ rest_matrix.to_quaternion()
+def aim(default, name, tip_rest, target, head):
+    """Gira la orientación heredada del padre (default) lo mínimo para que el hueso apunte
+    hacia target. tip_rest es el extremo del hueso en reposo (espacio de la armadura)."""
+    tip_default = default @ (rest_w[name].inverted() @ tip_rest)  # Dónde quedaría el extremo sin girar
+    rot = (tip_default - default.translation).rotation_difference(target - head) @ default.to_quaternion()
     return Matrix.LocRotScale(head, rot, Vector((1, 1, 1)))
 
 # ---------- Acción nueva en el Worker ----------
@@ -132,7 +140,7 @@ for frame in frames:
             s = TARGET_TO_SOURCE[name]
             delta = pose_u[s].to_quaternion() @ rest_u[s].to_quaternion().inverted()
             rot = delta @ rest_w[name].to_quaternion()
-            if name == 'Hips':
+            if name == 'Body':
                 head = rest_w[name].translation + (pose_u[s].translation - src_pelvis_rest) * height_ratio
             pose[name] = Matrix.LocRotScale(head, rot, Vector((1, 1, 1)))
         elif name in LEG_BONES:
@@ -145,13 +153,13 @@ for frame in frames:
                 l1 = (knee_rest - rest_w[up_name].translation).length
                 l2 = (rest_w[foot_name].translation - knee_rest).length
                 knee = two_bone_ik(hip, ankle, l1, l2, rest_w[pole_name].translation)
-                pose[name] = aim(rest_w[name], knee_rest - rest_w[up_name].translation, knee - hip, hip)
+                pose[name] = aim(default, name, knee_rest, knee, hip)
                 pose['_knee_' + side] = Matrix.Translation(knee)
                 pose['_ankle_' + side] = Matrix.Translation(ankle)
             else:
                 knee = pose['_knee_' + side].translation
                 ankle = pose['_ankle_' + side].translation
-                pose[name] = aim(rest_w[name], rest_w[foot_name].translation - rest_w[low_name].translation, ankle - knee, knee)
+                pose[name] = aim(default, name, rest_w[foot_name].translation, ankle, knee)
         else:
             pose[name] = default
 

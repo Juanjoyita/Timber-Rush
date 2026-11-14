@@ -97,12 +97,14 @@
 
         <!-- Recordatorio de controles -->
         <ul class="controls">
-          <li><kbd>WASD</kbd> Moverse</li>
+          <li><kbd>WASD</kbd> Caminar</li>
+          <li><kbd>Shift</kbd> Correr</li>
           <li><kbd>Ratón</kbd> Cámara</li>
-          <li><kbd>E</kbd> Cortar</li>
+          <li><kbd>Rueda</kbd> Zoom</li>
+          <li><kbd>Clic izq.</kbd> Hachazo / talar (mantener)</li>
+          <li><kbd>ESC</kbd> Pausa</li>
           <li><kbd>F</kbd> Vender</li>
           <li><kbd>B</kbd> Tienda</li>
-          <li><kbd>ESC</kbd> Pausa</li>
         </ul>
 
         <button type="button" id="btn-logout" class="btn btn-secondary">Cerrar sesión</button>
@@ -112,9 +114,17 @@
 
     <!-- ===== Pantalla 3: Juego 3D (el HUD se construye en fases posteriores) ===== -->
     <section id="screen-game" class="screen screen-game hidden">
-      <div class="game-topbar">
-        <!-- Botón provisional para volver al menú hasta que exista la pausa (ESC) -->
-        <button type="button" id="btn-back-menu" class="btn btn-secondary btn-small">Menú</button>
+      <!-- Si el navegador no deja capturar el cursor: el clic sobre el juego lo vuelve a pedir -->
+      <p id="lock-hint" class="game-hint hidden">Haz clic para controlar la cámara</p>
+
+      <!-- Pausa (ESC): el cursor queda libre -->
+      <div id="pause-overlay" class="pause-overlay hidden">
+        <div class="panel">
+          <h2 class="logo">Pausa</h2>
+          <button type="button" id="btn-resume" class="btn btn-primary btn-large">Continuar</button>
+          <button type="button" id="btn-back-menu" class="btn btn-secondary">Menú principal</button>
+          <p class="muted">Al continuar, el ratón vuelve a controlar la cámara.</p>
+        </div>
       </div>
     </section>
 

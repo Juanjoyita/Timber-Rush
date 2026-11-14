@@ -1,11 +1,17 @@
 // Game.js — Escena, renderer, cámara, luces y bucle principal.
 // FASE 5: personaje con física (cannon-es) y cámara en tercera persona.
+// FASE 6: ataque con el hacha (clic izquierdo mantenido) que tala los árboles alcanzados,
+//         sonidos posicionales y regeneración.
+//         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { FORESTS } from '../config.js';
 import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, WORLD } from './forest.js';
 import { createPhysics, FIXED_STEP } from './physics.js';
 import { Player } from './Player.js';
+import { ChoppingSystem } from './chopping.js';
+import { AudioManager } from './audio.js';
+import { CameraObstacles, ThirdPersonCamera } from './ThirdPersonCamera.js';
+import { PlaySession } from './session.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -13,17 +19,8 @@ const SHADOW_HALF = 32; // Área de sombras: 64 × 64 m
 const SHADOW_MAP = 2048;
 const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
 
-// Cámara en tercera persona
-// Encuadre (medido en 200 posiciones del bosque): con el punto de mira a la altura de los
-// hombros y la cámara inclinada hacia el suelo, las copas de los árboles cercanos (hasta 7 m)
-// quedaban fuera del plano y se veían troncos "cortados" (8 %, y 33 % con zoom). Mirando por
-// encima de la cabeza, con una vista más horizontal y algo más de campo de visión: 0 % (2 % con
-// zoom), y el personaje sigue viéndose entero.
-const CAMERA_HEIGHT = 2.5; // Punto de mira: por encima de la cabeza del personaje (1,83 m)
+// Cámara en tercera persona: ver ThirdPersonCamera.js (encuadre, sensibilidad, zoom y límites)
 const CAMERA_FOV = 65;
-const CAMERA_START = { distance: 9, rise: 1.2 }; // Posición inicial: detrás y algo por encima del punto de mira
-const CAMERA_FOLLOW = 8; // Rapidez con que la cámara alcanza al personaje (mayor = más rígida)
-const CAMERA_MIN_GROUND = 0.5; // La cámara nunca baja de 0,5 m sobre el terreno
 const MAX_DELTA = 0.1; // Si la pestaña estuvo oculta, no se simula un salto de tiempo enorme
 
 export class Game {
@@ -55,16 +52,8 @@ export class Game {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.container.appendChild(this.renderer.domElement);
 
-    // ---------- OrbitControls en tercera persona ----------
-    // El punto de mira (target) sigue al personaje; el jugador gira la cámara
-    // alrededor de él con el ratón (clic izquierdo + arrastrar) y acerca con la rueda.
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.enableDamping = true; // Giro suave
-    this.controls.enablePan = false; // El desplazamiento lo hace el personaje, no la cámara
-    this.controls.minDistance = 4; // Más cerca, las copas de los árboles cercanos no caben en el plano
-    this.controls.maxDistance = 15;
-    this.controls.minPolarAngle = 0.2; // Ni completamente cenital…
-    this.controls.maxPolarAngle = Math.PI / 2.05; // …ni por debajo del horizonte
+    // ---------- Cámara en tercera persona (ratón con Pointer Lock + rueda) ----------
+    this.cameraRig = new ThirdPersonCamera(this.camera, this.renderer.domElement, { heightAt });
 
     this.createLights();
 
@@ -74,12 +63,35 @@ export class Game {
     this.forest = null;
     this.physics = null;
     this.player = new Player(this.scene);
+    this.chopping = null;
+    this.aimDirection = new THREE.Vector3(); // Reutilizable (ayuda de puntería)
+
+    // ---------- Audio ----------
+    // Un único AudioListener en la cámara. El AudioContext se reanuda con la primera
+    // interacción del usuario; si falta algún archivo, el juego sigue sin ese sonido.
+    this.audio = new AudioManager(this.camera, this.scene);
+    this.audio.installUnlock(window);
+    this.audio.load();
+
+    // ---------- Partida: jugar, pausa (ESC) y cursor capturado ----------
+    // main.js asigna onPauseChange / onLockHint para mostrar la pausa y la indicación.
+    this.onPauseChange = () => {};
+    this.onLockHint = () => {};
+    this.session = new PlaySession(this.cameraRig, this.player, {
+      onPauseChange: (paused) => this.onPauseChange(paused),
+      onLockHint: (show) => this.onLockHint(show),
+    });
+    this.cameraRig.onLockChange = (locked) => this.session.lockChange(locked);
+    this.cameraRig.onLockError = () => this.session.lockError();
+    this.renderer.domElement.addEventListener('mousedown', (e) => this.session.pointerDown(e.button));
+    window.addEventListener('mouseup', (e) => this.session.pointerUp(e.button));
+    window.addEventListener('keydown', (e) => this.session.keyDown(e.code));
+    window.addEventListener('blur', () => this.session.blur());
+
     this.ready = this.load(forestConfig);
 
     // Reloj para calcular el tiempo entre fotogramas (delta)
     this.clock = new THREE.Clock();
-    this.followDelta = new THREE.Vector3(); // Vector reutilizable (sin crear objetos por fotograma)
-    this.followTarget = new THREE.Vector3();
 
     // Ajustar cámara y renderer cuando cambia el tamaño de la ventana
     window.addEventListener('resize', () => this.onResize());
@@ -139,10 +151,21 @@ export class Game {
     const yaw = Math.atan2((sell.minX + sell.maxX) / 2 - x, (sell.minZ + sell.maxZ) / 2 - z);
     this.player.attachBody(this.physics.createPlayerBody(x, z), yaw);
 
-    // Cámara inicial: detrás del personaje y algo elevada
-    const target = this.controls.target.set(x, this.player.position.y + CAMERA_HEIGHT, z);
-    const { distance, rise } = CAMERA_START;
-    this.camera.position.set(target.x - Math.sin(yaw) * distance, target.y + rise, target.z - Math.cos(yaw) * distance);
+    // Ataque y tala separados: el personaje golpea (haya o no un árbol) y avisa de cada impacto;
+    // el sistema de tala comprueba si alcanza a un árbol (alcance + arco frontal) y le aplica
+    // el daño. Sus eventos (golpe, caída, impacto contra el suelo) se convierten en sonidos.
+    // Un golpe al aire no genera eventos: ni daño ni sonidos de madera.
+    this.chopping = new ChoppingSystem({
+      forest: this.forest,
+      forestConfig,
+      scene: this.scene,
+      onEvent: (event) => this.audio.handleChopEvent(event),
+    });
+    this.player.onAttackImpact = (attack) => this.chopping.receiveAttack(attack);
+
+    // Cámara: obstáculos (terreno, troncos y aserradero; no las hojas) y posición inicial detrás
+    this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
+    this.cameraRig.placeBehind(this.player.position, yaw);
 
     // Medición: tras unos fotogramas mostramos en consola el coste real de un fotograma
     // desde la vista actual (incluye el pase de sombras). Solo informativo.
@@ -152,24 +175,18 @@ export class Game {
     }, 1000);
   }
 
-  /** Activa los controles del personaje solo cuando se está jugando (pantalla de juego). */
+  /**
+   * Entrar a jugar (llamar desde el clic en "Jugar": el navegador exige una interacción para
+   * capturar el cursor) o volver al menú (libera el cursor).
+   */
   setPlaying(playing) {
-    this.player.setEnabled(playing);
+    if (playing) this.session.start();
+    else this.session.stop();
   }
 
-  /**
-   * La cámara acompaña al personaje: el punto de mira se acerca suavemente a él y la
-   * cámara se desplaza lo mismo, de modo que se conserva el ángulo y la distancia
-   * que haya elegido el jugador con el ratón.
-   */
-  followPlayer(dt) {
-    const p = this.player.position;
-    this.followTarget.set(p.x, p.y + CAMERA_HEIGHT, p.z);
-    const target = this.controls.target;
-    this.followDelta.copy(target);
-    target.lerp(this.followTarget, 1 - Math.exp(-CAMERA_FOLLOW * dt));
-    this.followDelta.subVectors(target, this.followDelta);
-    this.camera.position.add(this.followDelta);
+  /** Botón "Continuar" de la pausa (interacción del usuario: vuelve a capturar el cursor). */
+  resume() {
+    this.session.resume();
   }
 
   onResize() {
@@ -182,29 +199,39 @@ export class Game {
     requestAnimationFrame(this.loop);
   }
 
+  /**
+   * Ayuda de puntería: si hay un árbol al alcance dentro del arco frontal de hacia donde mira la
+   * cámara, el personaje se gira exactamente hacia él. Devuelve su posición o null.
+   */
+  aimAssist() {
+    this.camera.getWorldDirection(this.aimDirection);
+    return this.chopping.findTarget(this.player.position, this.aimDirection)?.position ?? null;
+  }
+
   // Bucle principal con requestAnimationFrame (se sincroniza con el refresco de pantalla)
   loop() {
     requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), MAX_DELTA);
 
-    if (this.physics) {
+    // En pausa la simulación se congela: sin movimiento, sin tala ni daño, y los tiempos de
+    // caída y regeneración se detienen. La escena se sigue dibujando.
+    if (this.physics && !this.session.paused) {
       // 1. Entrada → velocidad del cuerpo  2. Física en pasos fijos  3. Cuerpo → modelo
+      const held = this.session.attacking;
+      this.player.setAttack(held, held ? this.aimAssist() : null);
       this.player.update(dt, this.camera);
       this.physics.world.step(FIXED_STEP, dt, 5);
-      this.player.syncVisual(dt);
-      this.followPlayer(dt);
+      this.player.syncVisual(dt); // Aquí se detecta el impacto del hacha (onAttackImpact)
+      this.chopping.update(dt, this.player.position); // Caídas, madera y regeneración
     }
 
-    this.controls.update(); // Necesario cuando enableDamping está activo
-
-    // La cámara no atraviesa el suelo (el terreno es ondulado)
-    const minY = heightAt(this.camera.position.x, this.camera.position.z) + CAMERA_MIN_GROUND;
-    if (this.camera.position.y < minY) this.camera.position.y = minY;
+    // Cámara: sigue al personaje, gira con el ratón y evita terreno, troncos y estructuras
+    if (this.player.model) this.cameraRig.update(dt, this.player.position);
 
     // Los árboles con la cámara dentro de su copa se ocultan (si no, se ven "cortados")
     if (this.forest) this.forest.updateCameraOcclusion(this.camera.position);
 
-    this.updateShadowArea(this.controls.target);
+    this.updateShadowArea(this.cameraRig.pivot);
     this.renderer.render(this.scene, this.camera);
   }
 }

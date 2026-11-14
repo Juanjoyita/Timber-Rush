@@ -40,5 +40,17 @@
 - **Autor:** Quaternius · **Archivo:** `public/assets/models/lumberjack.glb`
 - Sustituido por el Worker en la Fase 5. Se conserva hasta confirmar el cambio visualmente.
 
+## Sonidos (Fase 6: tala)
+Los archivos del juego están en `public/assets/audio/` (convertidos con `afconvert` de macOS a
+WAV mono 22 kHz: formato compatible con todos los navegadores y adecuado para sonido posicional).
+
+| Archivo del juego | Uso | Origen | Licencia |
+|---|---|---|---|
+| `wood_crack.wav` | Madera que se parte (último golpe) | Kenney — Impact Sounds 1.0 (`impactPlank_medium_000.ogg`), www.kenney.nl | CC0 1.0 (verificada en su `License.txt`) |
+| `axe_body_0…4.wav` | Capa grave del hachazo (variante al azar en cada golpe) | Kenney — Impact Sounds 1.0 (`impactWood_heavy_000…004.ogg`) | CC0 1.0 |
+| `ground_thud_0…4.wav` | Capa grave del árbol al tocar el suelo | Kenney — Impact Sounds 1.0 (`impactSoft_heavy_000…004.ogg`) | CC0 1.0 |
+| `axe_hit.wav` | Golpe del hacha | `acha.mp3` aportado por el director del proyecto | **Pendiente de registrar** |
+| `tree_fall.wav` | Crujidos de la caída (tramo 0,12–1,52 s) e impacto contra el suelo (desde 1,58 s) | `arbol caido.mp3` (en realidad Ogg Vorbis) aportado por el director del proyecto | **Pendiente de registrar** |
+
 ## Bibliotecas
 - Three.js (MIT) · cannon-es (MIT) · Appwrite Web SDK (BSD-3-Clause) · Vite (MIT)

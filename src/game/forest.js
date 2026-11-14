@@ -565,7 +565,10 @@ function createSawmill(geometries, logNames, mats) {
     logPiles[1].count = Math.floor(n / 2); // Huecos impares
   };
 
-  return { group, setLogPile, logSlots: slots.length, colliders };
+  // Obstáculos para la cámara: las piezas sólidas + el volumen del tejado
+  const cameraBoxes = [...colliders, { x: SM.x, y: 4.3, z: SM.z, hx: 4.4, hy: 1.0, hz: 3.2 }];
+
+  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes };
 }
 
 // ---------- Zonas reservadas ----------
@@ -607,6 +610,31 @@ function isReserved(x, z, radius, kind, clearings) {
     clearings.some((c) => Math.hypot(x - c.x, z - c.z) < c.r * m.clearing + radius)
   );
 }
+
+// ---------- Perfil del tronco visible ----------
+// Radio de la base y altura del tronco de un modelo, medidos en sus vértices de corteza (el
+// color del vértice más bajo). La colisión de cada árbol se ajusta a su tronco VISIBLE en vez
+// de usar un radio común: cada árbol choca donde se ve su tronco.
+const trunkProfiles = new WeakMap();
+export function trunkProfile(geometry) {
+  if (trunkProfiles.has(geometry)) return trunkProfiles.get(geometry);
+  const p = geometry.attributes.position;
+  const c = geometry.attributes.color;
+  let lowest = 0;
+  for (let i = 1; i < p.count; i++) if (p.getY(i) < p.getY(lowest)) lowest = i;
+  const bark = [c.getX(lowest), c.getY(lowest), c.getZ(lowest)];
+  let base = 0;
+  let height = 0;
+  for (let i = 0; i < p.count; i++) {
+    if (Math.abs(c.getX(i) - bark[0]) + Math.abs(c.getY(i) - bark[1]) + Math.abs(c.getZ(i) - bark[2]) > 0.02) continue;
+    height = Math.max(height, p.getY(i));
+    if (p.getY(i) < 0.05) base = Math.max(base, Math.hypot(p.getX(i), p.getZ(i)));
+  }
+  const profile = { base, height };
+  trunkProfiles.set(geometry, profile);
+  return profile;
+}
+const TRUNK_MARGIN = 0.02; // Margen de la colisión sobre el tronco visible (m)
 
 // ---------- Visibilidad de árboles instanciados ----------
 // Cada árbol (talable o decorativo) es una instancia de un InstancedMesh. Para ocultar uno
@@ -716,7 +744,9 @@ export function createForest(config, geometries) {
     // Proporciones independientes: altura y anchura propias de cada árbol
     const height = range(rand, config.treeHeight[0], config.treeHeight[1]);
     const width = range(rand, config.treeWidth[0], config.treeWidth[1]);
-    const radius = 0.3 * width; // Radio de colisión del tronco (Fase 5)
+    // Colisión del tronco = radio visible del modelo (escalado) + 2 cm
+    const trunk = trunkProfile(geometries[modelName]);
+    const radius = trunk.base * width + TRUNK_MARGIN;
 
     // Cada árbol es un registro de datos + una instancia del InstancedMesh de su modelo
     const y = heightAt(x, z) - 0.05; // Base apoyada (ligeramente enterrada)
@@ -727,7 +757,12 @@ export function createForest(config, geometries) {
       position: new THREE.Vector3(x, y, z),
       rotationY,
       scale: new THREE.Vector3(width, height, width),
-      userData: { type: isPine ? 'pino' : 'redondo', model: modelName, radius, height: geometries[modelName].boundingBox.max.y * height },
+      userData: {
+        type: isPine ? 'pino' : 'redondo', model: modelName,
+        radius, // Radio de colisión del tronco
+        height: geometries[modelName].boundingBox.max.y * height,
+        trunkHeight: trunk.height * height, // Altura del tronco visible (la cámara choca con él, no con las hojas)
+      },
       instance: treeEntry(geometries[modelName], matrix, x, y, z, width, height),
     };
     talableMatrices.get(modelName).push(matrix);
@@ -887,7 +922,9 @@ export function createForest(config, geometries) {
     updateCameraOcclusion: visibility.updateCameraOcclusion, // Llamar cada fotograma con la posición de la cámara
     setTreeHidden: (tree, reason, hidden) => visibility.setHidden(tree.instance, reason, hidden),
     sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
+    cameraBoxes: sawmill.cameraBoxes, // Cajas que la cámara no atraviesa (aserradero y tejado)
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
+    geometries, // Geometrías compartidas (la tala las reutiliza para tocones, caídas y troncos)
   };
 }

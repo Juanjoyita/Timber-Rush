@@ -49,12 +49,17 @@ function enterMenu(profile) {
 }
 
 // ---------- Menú principal ----------
+// La partida avisa a la interfaz de la pausa y de si hace falta un clic para capturar el cursor
+game.onPauseChange = ui.showPause;
+game.onLockHint = ui.showLockHint;
+
 ui.bindMenuEvents({
-  // Los controles del personaje solo funcionan mientras se está en la pantalla de juego
+  // Jugar y Continuar son clics del usuario: desde ellos se puede capturar el cursor
   onPlay: () => {
     ui.showScreen('game');
     game.setPlaying(true);
   },
+  onResume: () => game.resume(),
   onBackToMenu: () => {
     game.setPlaying(false);
     ui.showScreen('menu');

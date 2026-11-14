@@ -12,7 +12,9 @@
 import * as CANNON from 'cannon-es';
 import { heightAt, WORLD } from './forest.js';
 
-export const PLAYER_RADIUS = 0.35; // Radio de la esfera física del personaje (m)
+// Radio de la esfera física del personaje (m). Representa el volumen real del Worker: con
+// 0,35 m sus pies y brazos (que sobresalen hasta 0,47 m parado) entraban en los troncos.
+export const PLAYER_RADIUS = 0.45;
 export const FIXED_STEP = 1 / 60; // Paso fijo de la simulación (s)
 
 const TERRAIN_STEP = 2.5; // Separación de la rejilla del Heightfield = la del terreno visual

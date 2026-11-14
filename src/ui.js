@@ -67,6 +67,18 @@ export function renderMenu(profile) {
 export function bindMenuEvents(handlers) {
   $('btn-play').addEventListener('click', handlers.onPlay);
   $('btn-back-menu').addEventListener('click', handlers.onBackToMenu);
+  $('btn-resume').addEventListener('click', handlers.onResume);
+}
+
+// ---------- Pantalla de juego ----------
+/** Panel de pausa (ESC). */
+export function showPause(visible) {
+  $('pause-overlay').classList.toggle('hidden', !visible);
+}
+
+/** Indicación "Haz clic para controlar la cámara" (si no se pudo capturar el cursor). */
+export function showLockHint(visible) {
+  $('lock-hint').classList.toggle('hidden', !visible);
 }
 
 // ---------- Eventos ----------

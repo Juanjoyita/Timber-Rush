@@ -43,6 +43,7 @@ export const FORESTS = [
       flowers: ['nature_flower_01', 'nature_flower_02', 'nature_flower_03', 'nature_flower_04'],
       logs: ['nature_log_01', 'nature_log_02'],
       deadTrees: ['nature_tree_dead_01'],
+      stumps: ['nature_stump_01', 'nature_stump_02'], // Tocón que queda al talar (Fase 6)
     },
 
     // Árboles Low Poly propios (geometría de Three.js, ver forest.js): más variedad de formas
@@ -61,3 +62,48 @@ export const FORESTS = [
     },
   },
 ];
+
+// ---------- Tala (Fase 6) ----------
+// Ataque con el hacha (del personaje): se puede golpear en cualquier momento, haya o no un
+// objetivo. Quien recibe el golpe (por ahora solo los árboles) decide si le afecta.
+export const ATTACK = {
+  impactTime: 0.17, // Instante del golpe dentro de TreeChopping_Loop (s): la mano se frena en seco
+  reach: 1.3, // Alcance (m) desde el centro del personaje hasta la superficie del objetivo
+  halfAngle: Math.PI / 3, // Arco frontal: el objetivo debe estar a ±60° de hacia donde mira
+};
+
+// Árboles: resistencia, caída, madera y regeneración
+export const CHOPPING = {
+  regrowTime: 25, // Segundos desde el último golpe hasta que el árbol vuelve a crecer
+  growDuration: 0.8, // Animación de crecimiento (s)
+  fallDuration: 1.6, // Caída del árbol hasta tocar el suelo (s)
+  settleTime: 0.6, // Tiempo tumbado antes de convertirse en troncos (s)
+  fallAngle: 1.48, // Ángulo final de la caída (rad, ≈85°: la copa queda apoyada en el suelo)
+  regrowClearance: 0.6, // Distancia extra libre alrededor del tocón para poder regenerarse (m)
+  maxVisibleLogs: 400, // Límite de seguridad de troncos dibujados (la madera nunca se pierde)
+  logScale: 0.6, // Tamaño de los troncos de madera respecto al modelo (≈1,1 m de largo)
+};
+
+// ---------- Audio (Fase 6) ----------
+// Archivos en public/assets/audio/ (WAV mono 22 kHz, ver CREDITOS.md). Cada sonido indica
+// su archivo (file) o varias variantes (files, se elige una al azar en cada reproducción) y,
+// si usa solo un tramo, el inicio (offset) y la duración en segundos.
+export const AUDIO = {
+  masterVolume: 0.8,
+  poolSize: 8, // Fuentes de sonido reutilizables (no una por árbol)
+  refDistance: 6, // A esta distancia el sonido se oye a volumen completo (m)
+  rolloffFactor: 1.4, // Rapidez con la que se atenúa al alejarse
+  maxDistance: 70,
+  sounds: {
+    // acha.mp3 tiene 0,40 s de silencio inicial: se empieza en el golpe
+    axe_hit: { file: 'axe_hit.wav', offset: 0.4, volume: 0.7, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
+    // Capa grave del hachazo (golpe de madera con cuerpo): suena junto a axe_hit
+    axe_body: { files: ['axe_body_0.wav', 'axe_body_1.wav', 'axe_body_2.wav', 'axe_body_3.wav', 'axe_body_4.wav'], volume: 0.55, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.05 },
+    wood_crack: { file: 'wood_crack.wav', volume: 0.9, cooldown: 0.5, maxConcurrent: 2 },
+    // "arbol caido" contiene los crujidos de la caída y el choque final: se usan por separado
+    tree_falling: { file: 'tree_fall.wav', offset: 0.12, duration: 1.4, volume: 0.9, cooldown: 0.5, maxConcurrent: 2 },
+    tree_impact: { file: 'tree_fall.wav', offset: 1.58, duration: 1.05, volume: 1.0, cooldown: 0.3, maxConcurrent: 2 },
+    // Capa grave del impacto (el tronco pesado golpea la tierra): suena junto a tree_impact
+    ground_thud: { files: ['ground_thud_0.wav', 'ground_thud_1.wav', 'ground_thud_2.wav', 'ground_thud_3.wav', 'ground_thud_4.wav'], volume: 0.85, cooldown: 0.3, maxConcurrent: 2, pitchVariation: 0.08 },
+  },
+};
