@@ -2,16 +2,20 @@
 // FASE 5: personaje con física (cannon-es) y cámara en tercera persona.
 // FASE 6: ataque con el hacha (clic izquierdo mantenido) que tala los árboles alcanzados,
 //         sonidos posicionales y regeneración.
+// FASE 7A: recolección automática de la madera del suelo y mochila.
+// FASE 7B: venta con F en la plataforma del aserradero y celebración (solo tras confirmarla).
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
-import { FORESTS } from '../config.js';
-import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, WORLD } from './forest.js';
+import { FORESTS, SALE } from '../config.js';
+import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, surfaceAt, WORLD } from './forest.js';
 import { createPhysics, FIXED_STEP } from './physics.js';
 import { Player } from './Player.js';
 import { ChoppingSystem } from './chopping.js';
 import { AudioManager } from './audio.js';
 import { CameraObstacles, ThirdPersonCamera } from './ThirdPersonCamera.js';
 import { PlaySession } from './session.js';
+import { Backpack } from './backpack.js';
+import { SaleCelebration } from './saleEffects.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -65,6 +69,30 @@ export class Game {
     this.player = new Player(this.scene);
     this.chopping = null;
     this.aimDirection = new THREE.Vector3(); // Reutilizable (ayuda de puntería)
+    this.footPosition = new THREE.Vector3(); // Reutilizable (sonido de pasos)
+
+    // ---------- Mochila (Fase 7A) ----------
+    // main.js asigna onBackpackChange / onBackpackFull para el indicador de la interfaz.
+    this.onBackpackChange = () => {};
+    this.onBackpackFull = () => {};
+    this.onWoodCollected = () => {}; // (unidades) => void — para totalWoodCollected
+    this.backpack = new Backpack(1);
+    this.backpack.onChange = (backpack) => this.onBackpackChange(backpack);
+
+    // ---------- Venta (Fase 7B) ----------
+    // Game solo detecta la plataforma y la tecla F, y celebra ventas YA confirmadas:
+    // el cálculo y la escritura segura los hace progressSync.js (main.js los conecta).
+    this.onSellRequest = () => {};
+    this.onSellZoneChange = () => {};
+    this.inSellZone = false;
+    this.saleCelebration = new SaleCelebration(this.scene);
+    const zone = SAWMILL_AREAS.sellZone;
+    this.sellCenter = new THREE.Vector3((zone.minX + zone.maxX) / 2, 0, (zone.minZ + zone.maxZ) / 2);
+    this.sellCenter.y = heightAt(this.sellCenter.x, this.sellCenter.z) + 0.35;
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== SALE.key || e.repeat || !this.session.active || !this.inSellZone) return;
+      this.onSellRequest();
+    });
 
     // ---------- Audio ----------
     // Un único AudioListener en la cámara. El AudioContext se reanuda con la primera
@@ -163,6 +191,10 @@ export class Game {
     });
     this.player.onAttackImpact = (attack) => this.chopping.receiveAttack(attack);
 
+    // Pasos: sonido posicional en los pies, según el suelo (hierba o madera del aserradero)
+    // y más fuerte al correr. El ritmo lo marcan las animaciones Walk / Run.
+    this.player.onFootstep = (step) => this.playFootstep(step);
+
     // Cámara: obstáculos (terreno, troncos y aserradero; no las hojas) y posición inicial detrás
     this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
     this.cameraRig.placeBehind(this.player.position, yaw);
@@ -182,6 +214,43 @@ export class Game {
   setPlaying(playing) {
     if (playing) this.session.start();
     else this.session.stop();
+  }
+
+  /** Nivel de la mochila del perfil del jugador (1..3). */
+  setBackpackLevel(level) {
+    this.backpack.setLevel(level);
+  }
+
+  playFootstep({ running }) {
+    const p = this.player.position;
+    this.footPosition.set(p.x, p.y + 0.05, p.z);
+    this.audio.play(`step_${surfaceAt(p.x, p.z)}${running ? '_run' : ''}`, this.footPosition);
+  }
+
+  /** ¿Está el personaje sobre la plataforma de venta? Avisa solo cuando cambia. */
+  updateSellZone() {
+    const p = this.player.position, z = SAWMILL_AREAS.sellZone;
+    const inside = p.x >= z.minX && p.x <= z.maxX && p.z >= z.minZ && p.z <= z.maxZ;
+    if (inside === this.inSellZone) return;
+    this.inSellZone = inside;
+    this.onSellZoneChange(inside);
+  }
+
+  /**
+   * Monedas 3D que saltan desde la plataforma de venta. Solo visual: lo llama la secuencia de
+   * celebración (saleSequence.js) cuando la venta ya está confirmada.
+   */
+  burstSaleCoins() {
+    this.saleCelebration.burst(this.sellCenter);
+  }
+
+  /**
+   * Al cerrar sesión: la siguiente cuenta empieza con la mochila vacía y sin la madera que
+   * quedó en el suelo (si no, otra cuenta podría recogerla). No borra nada en Appwrite.
+   */
+  resetPlayerData() {
+    this.backpack.clear();
+    this.chopping?.wood.clear();
   }
 
   /** Botón "Continuar" de la pausa (interacción del usuario: vuelve a capturar el cursor). */
@@ -223,6 +292,11 @@ export class Game {
       this.physics.world.step(FIXED_STEP, dt, 5);
       this.player.syncVisual(dt); // Aquí se detecta el impacto del hacha (onAttackImpact)
       this.chopping.update(dt, this.player.position); // Caídas, madera y regeneración
+      // Recolección automática: los troncos cercanos pasan a la mochila (en pausa no se recoge)
+      const collected = this.chopping.wood.collect(dt, this.player.position, this.backpack, () => this.onBackpackFull());
+      if (collected > 0) this.onWoodCollected(collected);
+      this.updateSellZone();
+      this.saleCelebration.update(dt);
     }
 
     // Cámara: sigue al personaje, gira con el ratón y evita terreno, troncos y estructuras

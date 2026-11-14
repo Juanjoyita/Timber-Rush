@@ -35,7 +35,17 @@ export const SAWMILL_AREAS = {
   compound: { minX: SM.x - 4.2, maxX: SM.x + 9.1, minZ: SM.z - 3.4, maxZ: SM.z + 8.8 },
   // Plataforma de venta: aquí irá el trigger AABB de la Fase 7
   sellZone: { minX: SM.x + 5.2, maxX: SM.x + 8.8, minZ: SM.z - 3.3, maxZ: SM.z + 0.3 },
+  // Suelos de madera (sonido de pasos): el del cobertizo (8 × 6 m) y la plataforma de venta
+  woodenFloors: [
+    { minX: SM.x - 4, maxX: SM.x + 4, minZ: SM.z - 3, maxZ: SM.z + 3 },
+    { minX: SM.x + 5.1, maxX: SM.x + 8.9, minZ: SM.z - 3.4, maxZ: SM.z + 0.4 },
+  ],
 };
+
+/** Tipo de suelo bajo un punto: 'wood' sobre el cobertizo o la plataforma, 'grass' en el resto. */
+export function surfaceAt(x, z) {
+  return SAWMILL_AREAS.woodenFloors.some((r) => x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) ? 'wood' : 'grass';
+}
 
 // Caminos de tierra (segmentos). El primero lleva del spawn a la plataforma de venta;
 // los otros son sendas que se adentran en el bosque.
@@ -383,7 +393,7 @@ function createDensity(config, rand) {
 
   return (x, z) => {
     if (Math.abs(x) > WORLD.playHalf || Math.abs(z) > WORLD.playHalf) return 0.7; // Franja exterior densa
-    let d = 0.12;
+    let d = config.baseDensity ?? 0.12; // Densidad fuera de las arboledas
     for (const g of groves) d += g.w * Math.exp(-((x - g.x) ** 2 + (z - g.z) ** 2) / (2 * g.s * g.s));
     return Math.min(1, d);
   };
@@ -691,6 +701,84 @@ function treeEntry(geometry, matrix, x, base, z, width, height) {
   return { matrix, x, z, base, top: base + bb.max.y * height, reach: canopy + CAMERA_MARGIN, mesh: null, index: -1, hidden: 0 };
 }
 
+// ---------- Accesibilidad a pie ----------
+
+// Radio de la esfera física del personaje (m). Representa el volumen real del Worker: con
+// 0,35 m sus pies y brazos (que sobresalen hasta 0,47 m parado) entraban en los troncos.
+// (physics.js lo reexporta.)
+export const PLAYER_RADIUS = 0.45;
+const WALK_CELL = 0.25; // Resolución de la rejilla de accesibilidad (m)
+const CHOP_REACH = 1.0; // Distancia máxima al tronco para considerarlo talable a pie (m)
+
+/**
+ * Rejilla de la zona jugable con las celdas por las que puede pasar el personaje (su radio
+ * incluido) y relleno por inundación desde el punto de inicio.
+ * @returns (x, z) => true si se puede llegar caminando a ese punto
+ */
+function createWalkability({ trees, rocks, decorColliders, boxes }) {
+  const H = WORLD.playHalf;
+  const N = Math.ceil((2 * H) / WALK_CELL);
+  const blocked = new Uint8Array(N * N);
+  const cell = (v) => Math.floor((v + H) / WALK_CELL);
+  const center = (i) => -H + (i + 0.5) * WALK_CELL;
+  const stamp = (minX, maxX, minZ, maxZ, test) => {
+    for (let i = Math.max(0, cell(minX)); i <= Math.min(N - 1, cell(maxX)); i++) {
+      for (let j = Math.max(0, cell(minZ)); j <= Math.min(N - 1, cell(maxZ)); j++) if (test(center(i), center(j))) blocked[i * N + j] = 1;
+    }
+  };
+  const circle = (x, z, r) => {
+    const R = r + PLAYER_RADIUS;
+    stamp(x - R, x + R, z - R, z + R, (cx, cz) => (cx - x) ** 2 + (cz - z) ** 2 < R * R);
+  };
+  for (const t of trees) circle(t.position.x, t.position.z, t.userData.radius);
+  // Rocas con su tamaño visual completo (más prudente que su colisión, que es el 80 %)
+  for (const r of rocks) circle(r.position.x, r.position.z, r.userData.radius);
+  for (const c of decorColliders) {
+    const cos = Math.cos(c.rotY), sin = Math.sin(c.rotY), R = Math.hypot(c.hx, c.hz) + PLAYER_RADIUS;
+    stamp(c.x - R, c.x + R, c.z - R, c.z + R, (cx, cz) => {
+      const dx = cx - c.x, dz = cz - c.z;
+      const lx = dx * cos - dz * sin, lz = dx * sin + dz * cos; // Al sistema del tronco caído
+      return Math.hypot(Math.max(Math.abs(lx) - c.hx, 0), Math.max(Math.abs(lz) - c.hz, 0)) < PLAYER_RADIUS;
+    });
+  }
+  // Cajas del aserradero que no se pueden pisar (los suelos bajos, como la plataforma, sí)
+  for (const b of boxes) {
+    if (b.y + b.hy < 0.35) continue;
+    const R = PLAYER_RADIUS;
+    stamp(b.x - b.hx - R, b.x + b.hx + R, b.z - b.hz - R, b.z + b.hz + R, () => true);
+  }
+  // Relleno por inundación desde el punto de inicio
+  const reach = new Uint8Array(N * N);
+  const start = cell(WORLD.spawn.x) * N + cell(WORLD.spawn.z);
+  const queue = new Int32Array(N * N);
+  let head = 0, tail = 0;
+  queue[tail++] = start;
+  reach[start] = 1;
+  while (head < tail) {
+    const c = queue[head++], i = Math.floor(c / N), j = c % N;
+    if (i > 0 && !blocked[c - N] && !reach[c - N]) { reach[c - N] = 1; queue[tail++] = c - N; }
+    if (i < N - 1 && !blocked[c + N] && !reach[c + N]) { reach[c + N] = 1; queue[tail++] = c + N; }
+    if (j > 0 && !blocked[c - 1] && !reach[c - 1]) { reach[c - 1] = 1; queue[tail++] = c - 1; }
+    if (j < N - 1 && !blocked[c + 1] && !reach[c + 1]) { reach[c + 1] = 1; queue[tail++] = c + 1; }
+  }
+  return (x, z) => {
+    const i = cell(x), j = cell(z);
+    return i >= 0 && j >= 0 && i < N && j < N && reach[i * N + j] === 1;
+  };
+}
+
+/** ¿Hay algún punto alcanzable a pie a menos de CHOP_REACH del tronco? */
+function isChoppable(tree, canReach) {
+  const R = tree.userData.radius + PLAYER_RADIUS + CHOP_REACH;
+  for (let a = 0; a < 16; a++) {
+    for (const r of [R * 0.6, R]) {
+      const ang = (a / 16) * Math.PI * 2;
+      if (canReach(tree.position.x + Math.cos(ang) * r, tree.position.z + Math.sin(ang) * r)) return true;
+    }
+  }
+  return false;
+}
+
 // ---------- API pública ----------
 
 /**
@@ -772,13 +860,6 @@ export function createForest(config, geometries) {
     obstacles.add(x, z, radius);
     trees.push(tree);
   }
-  // Un InstancedMesh por modelo (11): de ~300 llamadas de dibujo a 11 (+11 en sombras)
-  const talableMeshes = new Map(
-    instancedByModel(talableMatrices, geometries, mats.nature, { cast: true, receive: true }).map((m) => [m.name, m])
-  );
-  for (const tree of trees) tree.instance.mesh = talableMeshes.get(tree.userData.model);
-  for (const m of talableMeshes.values()) m.name = `talables-${m.name}`; // Distinto de los decorativos
-  group.add(...talableMeshes.values());
 
   // --- Rocas: mallas individuales (colisión en la Fase 5) ---
   const rocks = [];
@@ -810,7 +891,7 @@ export function createForest(config, geometries) {
   const logRand = createRandom(config.seed + 2);
   const logMatrices = new Map(models.logs.map((n) => [n, []]));
   const decorColliders = [];
-  for (let attempt = 0; decorColliders.length < config.fallenLogCount && attempt < 4000; attempt++) {
+  for (let attempt = 0; decorColliders.length < config.fallenLogCount && attempt < 20000; attempt++) {
     const x = range(logRand, -H + 4, H - 4);
     const z = range(logRand, -H + 4, H - 4);
     const name = pick(logRand, models.logs);
@@ -835,6 +916,30 @@ export function createForest(config, geometries) {
     obstacles.add(x, z, along / 2);
   }
   group.add(...instancedByModel(logMatrices, geometries, mats.nature, { cast: true, receive: true }));
+
+  // --- Árboles talables inaccesibles: se descartan ---
+  // Con un bosque tan denso, algún árbol puede quedar encerrado entre otros, rocas o troncos
+  // caídos. Se calcula a dónde se puede llegar caminando desde el inicio y se quitan los árboles
+  // sin ningún punto alcanzable cerca del tronco (nunca habría un árbol imposible de talar).
+  const canReach = createWalkability({ trees, rocks, decorColliders, boxes: sawmill.colliders });
+  const reachableTrees = trees.filter((t) => isChoppable(t, canReach));
+  trees.length = 0;
+  trees.push(...reachableTrees);
+  for (const list of talableMatrices.values()) list.length = 0;
+  trees.forEach((tree, i) => {
+    tree.name = `arbol-${i}`;
+    const list = talableMatrices.get(tree.userData.model);
+    list.push(tree.instance.matrix);
+    tree.instance.index = list.length - 1;
+  });
+
+  // Un InstancedMesh por modelo (11): una llamada de dibujo por modelo aunque haya más de mil (+11 en sombras)
+  const talableMeshes = new Map(
+    instancedByModel(talableMatrices, geometries, mats.nature, { cast: true, receive: true }).map((m) => [m.name, m])
+  );
+  for (const tree of trees) tree.instance.mesh = talableMeshes.get(tree.userData.model);
+  for (const m of talableMeshes.values()) m.name = `talables-${m.name}`; // Distinto de los decorativos
+  group.add(...talableMeshes.values());
 
   // --- Árboles decorativos: franja de bosque exterior + algunos dispersos más lejos ---
   // InstancedMesh y sin sombras. Disimulan el límite de la zona jugable sin montañas.

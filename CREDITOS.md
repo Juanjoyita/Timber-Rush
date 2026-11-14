@@ -51,6 +51,21 @@ WAV mono 22 kHz: formato compatible con todos los navegadores y adecuado para so
 | `ground_thud_0…4.wav` | Capa grave del árbol al tocar el suelo | Kenney — Impact Sounds 1.0 (`impactSoft_heavy_000…004.ogg`) | CC0 1.0 |
 | `axe_hit.wav` | Golpe del hacha | `acha.mp3` aportado por el director del proyecto | **Pendiente de registrar** |
 | `tree_fall.wav` | Crujidos de la caída (tramo 0,12–1,52 s) e impacto contra el suelo (desde 1,58 s) | `arbol caido.mp3` (en realidad Ogg Vorbis) aportado por el director del proyecto | **Pendiente de registrar** |
+| `step_grass_0…4.wav` | Pasos del Worker sobre hierba (variante al azar) | Kenney — Impact Sounds 1.0 (`footstep_grass_000…004.ogg`) | CC0 1.0 |
+| `step_wood_0…4.wav` | Pasos sobre la madera del aserradero | Kenney — Impact Sounds 1.0 (`footstep_wood_000…004.ogg`) | CC0 1.0 |
+| `sale_bonus.wav` | Venta: monedas ganadas (0 s) | «Bonus Points» de **Liecio** (Pixabay) — https://pixabay.com/sound-effects/bonus-points-190035/ · original `liecio-bonus-points-190035.mp3` | Pixabay Content License |
+| `sale_chime.wav` | Venta: conteo y destellos (0,45 s) | «Reward Chime» de **Universfield** (Pixabay) — https://pixabay.com/sound-effects/reward-chime-144757/ · original `universfield-reward-chime-144757.mp3` | Pixabay Content License |
+| `sale_levelup.wav` | Venta: cierre y nuevo saldo (1,40 s) | «Level Up 06» de **Universfield** (Pixabay) — https://pixabay.com/sound-effects/level-up-06-370051/ · original `universfield-level-up-06-370051.mp3` | Pixabay Content License |
+
+### Sonidos de la venta (Pixabay)
+- Licencia verificada en la página de cada sonido (noviembre de 2026): «Free for use under the Pixabay
+  Content License» — https://pixabay.com/service/license-summary/ . Permite el uso comercial y no exige
+  atribución (se acredita igualmente). Prohíbe distribuir el contenido «tal cual» por separado; aquí se usa
+  editado (recortes, fundidos, mezcla a mono, nivelado) y combinado en la secuencia sonora del juego.
+- Originales sin modificar en `recursos-originales/` (no se versionan). Los archivos del juego se generan
+  con `node herramientas/procesar_audio_venta.mjs`.
+- Pasos: recortados a su parte audible y nivelados con `node herramientas/procesar_pasos.mjs` (originales de
+  Kenney en `recursos-originales/kenney_impact-sounds/`).
 
 ## Bibliotecas
 - Three.js (MIT) · cannon-es (MIT) · Appwrite Web SDK (BSD-3-Clause) · Vite (MIT)

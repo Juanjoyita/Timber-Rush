@@ -10,6 +10,9 @@
 //   reanuda con la primera pulsación de ratón o teclado, y antes de eso no se reproduce nada.
 // - Limitador por sonido (tiempo mínimo entre repeticiones y máximo de copias simultáneas)
 //   para evitar saturación.
+// - Fase 7B: sonidos de INTERFAZ (venta) sin posición ni atenuación (THREE.Audio). Cada uno
+//   tiene su propia fuente, así que nunca suena duplicado; se pueden programar con retardo en
+//   el reloj de audio y cancelar. Un fallo de audio nunca interrumpe el juego.
 import * as THREE from 'three';
 import { AUDIO } from '../config.js';
 
@@ -47,7 +50,7 @@ export class AudioManager {
    * @param scene    Escena donde se colocan las fuentes posicionales
    * @param options  Dependencias opcionales (las pruebas usan versiones simuladas)
    */
-  constructor(camera, scene, { listener = null, createSource = null, loader = null, config = AUDIO } = {}) {
+  constructor(camera, scene, { listener = null, createSource = null, createUiSource = null, loader = null, config = AUDIO } = {}) {
     this.config = config;
     this.listener = listener ?? new THREE.AudioListener();
     this.listener.setMasterVolume(config.masterVolume);
@@ -69,6 +72,14 @@ export class AudioManager {
       scene.add(source);
       return source;
     });
+
+    // Sonidos de interfaz: una fuente no posicional por sonido (marcados con ui: true)
+    const makeUi = createUiSource ?? (() => new THREE.Audio(this.listener));
+    this.uiSources = new Map(
+      Object.entries(config.sounds)
+        .filter(([, cfg]) => cfg.ui)
+        .map(([name]) => [name, makeUi()])
+    );
   }
 
   /** Carga todos los archivos (una vez cada uno). Si falta alguno, el juego sigue sin ese sonido. */
@@ -126,7 +137,9 @@ export class AudioManager {
     source.setBuffer(buffer);
     source.offset = cfg.offset ?? 0;
     source.duration = cfg.duration; // undefined = hasta el final
-    source.setVolume(cfg.volume ?? 1);
+    // Variación de volumen opcional (p. ej. pasos): cada repetición suena un poco distinta
+    const volumeVariation = cfg.volumeVariation ?? 0;
+    source.setVolume((cfg.volume ?? 1) * (1 - Math.random() * volumeVariation));
     const variation = cfg.pitchVariation ?? 0;
     source.setPlaybackRate(1 + (Math.random() * 2 - 1) * variation); // Evita que suene repetitivo
     source.play();
@@ -135,6 +148,39 @@ export class AudioManager {
     const length = (cfg.duration ?? buffer.duration - (cfg.offset ?? 0)) / source.playbackRate;
     this.limiter.register(name, now, length);
     return true;
+  }
+
+  /**
+   * Sonido de interfaz (sin posición), opcionalmente programado "delay" segundos después en el
+   * reloj de audio. Si ese sonido ya estaba sonando o programado, se reinicia (nunca se duplica).
+   * Devuelve true si se ha programado; false si el audio está bloqueado, falta el archivo o falla.
+   */
+  playUi(name, delay = 0) {
+    try {
+      const cfg = this.config.sounds[name];
+      const source = this.uiSources.get(name);
+      const buffer = cfg && this.buffers.get(cfg.file);
+      if (!source || !buffer || this.listener.context.state !== 'running') return false;
+      if (source.isPlaying) source.stop();
+      source.setBuffer(buffer);
+      source.setVolume(cfg.volume ?? 1);
+      source.play(delay);
+      return true;
+    } catch (error) {
+      console.warn(`[Timber Rush] No se pudo reproducir ${name}`, error);
+      return false;
+    }
+  }
+
+  /** Detiene (o cancela si aún no habían empezado) todos los sonidos de interfaz. */
+  stopUi() {
+    for (const source of this.uiSources.values()) {
+      try {
+        if (source.isPlaying) source.stop();
+      } catch {
+        // Ignorar: detener un sonido nunca debe romper el juego
+      }
+    }
   }
 
   /** Traduce los eventos de la tala (chopping.js) a sonidos. */

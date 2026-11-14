@@ -1,7 +1,8 @@
 // appwrite.js — Conexión con Appwrite: cuentas, sesiones y fila de progreso.
 // FASE 2: registro, inicio de sesión, cierre de sesión, recuperación de sesión
 // y creación del perfil con nombre de usuario único.
-// (El guardado y la carga completos del progreso se implementan en la Fase 10.)
+// FASE 7A: guardado parcial del progreso (mochila y madera recogida) con control de versión.
+// (El guardado completo del resto del progreso se implementa en la Fase 10.)
 //
 // SEGURIDAD:
 // - Las contraseñas solo se envían a Appwrite, que las guarda con hash (Argon2).
@@ -139,6 +140,92 @@ export async function createProfile(user, username) {
     taken.type = USERNAME_TAKEN;
     throw taken;
   }
+}
+
+// ---------- Guardado del progreso (Fase 7A) ----------
+//
+// Escritura CONDICIONAL y ATÓMICA basada en saveVersion, con transacciones de TablesDB.
+//
+// Semántica de incrementRowColumn con "max" (verificada en el código del servidor:
+// utopia-php/database, Trait/Documents.php, y en los tests e2e de Appwrite):
+//   resultado = actual + valor;  si resultado > max → error (LimitException, 400)
+//   y la base de datos lo aplica como  UPDATE … WHERE actual <= max − valor  (fila bloqueada).
+// Por tanto, incrementar saveVersion en 1 con max = esperada + 1 solo se aplica si
+// actual <= esperada; como saveVersion solo aumenta, equivale a "actual == esperada".
+//
+// El incremento y la actualización de los datos se preparan en la MISMA transacción: al
+// confirmarla, Appwrite las ejecuta en una única transacción de base de datos (todo o nada)
+// y, si la condición falla, no se aplica ninguna de las dos.
+
+const progressRow = (userId) => ({ databaseId: DATABASE_ID, tableId: PROGRESS_TABLE_ID, rowId: userId });
+
+/** Crea una transacción, prepara las operaciones y la confirma (o la descarta si algo falla antes). */
+async function commitOperations(operations) {
+  const transaction = await tablesDB.createTransaction();
+  try {
+    await tablesDB.createOperations({ transactionId: transaction.$id, operations });
+  } catch (error) {
+    // No se llegó a confirmar: se descarta (si esto también falla, la transacción caduca sola)
+    tablesDB.updateTransaction({ transactionId: transaction.$id, rollback: true }).catch(() => {});
+    throw error;
+  }
+  await tablesDB.updateTransaction({ transactionId: transaction.$id, commit: true });
+}
+
+/**
+ * Guarda columnas del progreso solo si saveVersion sigue siendo expectedVersion.
+ * Actualiza ÚNICAMENTE las columnas de "data" (las demás no se envían y no cambian) y sube
+ * saveVersion en 1. Permisos: los del usuario (solo su propia fila).
+ * @returns la nueva versión (expectedVersion + 1)
+ */
+export async function saveProgressFields(userId, expectedVersion, data) {
+  await commitOperations([
+    { action: 'increment', ...progressRow(userId), data: { column: 'saveVersion', value: 1, max: expectedVersion + 1 } },
+    { action: 'update', ...progressRow(userId), data },
+  ]);
+  return expectedVersion + 1;
+}
+
+/**
+ * Comprobación de diagnóstico (una vez por sesión, antes del primer guardado): intenta subir
+ * saveVersion con max = versión actual, algo que el servidor DEBE rechazar con la semántica
+ * esperada. No incluye datos: aunque se aplicase, solo cambiaría saveVersion.
+ * @returns 'strict' si el servidor la rechazó (la protección por versión es exacta) o
+ *          'lenient' si la aceptó (saveVersion ha subido a currentVersion + 1 y la protección
+ *          NO sería fiable: el guardado debe desactivarse).
+ */
+export async function probeVersionGuard(userId, currentVersion) {
+  try {
+    await commitOperations([{ action: 'increment', ...progressRow(userId), data: { column: 'saveVersion', value: 1, max: currentVersion } }]);
+  } catch (error) {
+    if (classifySaveError(error) === 'condition') return 'strict';
+    throw error;
+  }
+  return 'lenient';
+}
+
+/**
+ * Clasifica un error de guardado para decidir qué hacer y poder diagnosticarlo:
+ *  - 'condition':   no se cumplió la condición del incremento de saveVersion
+ *                   (progressSync lee la fila para distinguir un conflicto real de otra causa)
+ *  - 'tx-conflict': Appwrite rechazó la transacción porque la fila cambió mientras se preparaba
+ *  - 'permission':  sin sesión, sin permiso o fila inaccesible
+ *  - 'unsupported': transacciones u operaciones no disponibles en este servidor o plan
+ *  - 'network':     sin respuesta, error del servidor, límite de peticiones o transacción caducada:
+ *                   NO se sabe si se aplicó (se verificará leyendo la fila antes de reintentar)
+ *  - 'invalid':     datos rechazados (reintentar igual no sirve)
+ */
+export function classifySaveError(error) {
+  const type = error?.type ?? '';
+  const code = error?.code ?? 0;
+  if (type === 'attribute_limit_exceeded' || type === 'column_limit_exceeded') return 'condition';
+  if (type === 'transaction_conflict') return 'tx-conflict';
+  if (['general_route_not_found', 'general_not_implemented', 'general_service_disabled', 'transaction_limit_exceeded'].includes(type) || code === 501) return 'unsupported';
+  if (['transaction_expired', 'transaction_failed', 'transaction_not_found'].includes(type)) return 'network';
+  if (code === 401 || code === 403 || ['user_unauthorized', 'general_unauthorized_scope', 'row_not_found', 'user_session_not_found'].includes(type)) return 'permission';
+  if (code === 0 || code === 429 || code >= 500 || error instanceof TypeError) return 'network';
+  if (code === 400) return 'invalid';
+  return 'network'; // Desconocido: se trata como incierto (se comprueba antes de reintentar)
 }
 
 /** Traduce los errores de Appwrite a mensajes claros en español. */

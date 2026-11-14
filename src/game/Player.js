@@ -50,6 +50,12 @@ const AXE_SOCKET = {
 const RIGHT_HAND_BONES = /^(Index|Middle|Ring|Pinky|Thumb)\dR\./;
 const GRIP_POSE_TIME = 0.17;
 
+// Pasos: huesos de los pies (controles del pie del Worker) y altura sobre su punto más bajo a
+// partir de la cual se considera que el pie toca el suelo (al bajar).
+const FOOT_BONES = { L: 'FootL', R: 'FootR' };
+const FOOT_CONTACT_HEIGHT = 0.05; // m: el talón llega al suelo
+const FOOT_REARM_HEIGHT = 0.03; // m extra que el pie debe subir antes de contar otro apoyo
+
 // Piezas de ropa intercambiables (todos los personajes del paquete comparten el esqueleto)
 const OUTFIT_PART_NAME = /_(Head|Body|Legs|Pants|Feet)$/i;
 const OUTFIT_SLOTS = { head: 'head', body: 'body', legs: 'legs', pants: 'legs', feet: 'feet' };
@@ -97,6 +103,46 @@ function buildGripClip(chopClip, clips) {
   return new THREE.AnimationClip('Grip_R', 1, tracks);
 }
 
+/**
+ * Instantes de un ciclo en los que cada pie toca el suelo: el hueso del pie, al bajar, cruza
+ * FOOT_CONTACT_HEIGHT sobre su punto más bajo. Se calcula una vez muestreando la animación.
+ * @returns [{ time, foot: 'L' | 'R' }] ordenados por tiempo
+ */
+export function computeFootstepTimes(model, clip, samples = 120) {
+  const mixer = new THREE.AnimationMixer(model);
+  mixer.clipAction(clip).play();
+  const p = new THREE.Vector3();
+  const heights = { L: [], R: [] };
+  for (let i = 0; i <= samples; i++) {
+    mixer.setTime((i / samples) * clip.duration);
+    model.updateMatrixWorld(true);
+    for (const [foot, bone] of Object.entries(FOOT_BONES)) heights[foot].push(model.getObjectByName(bone).getWorldPosition(p).y);
+  }
+  mixer.stopAllAction();
+  mixer.uncacheRoot(model);
+  const steps = [];
+  for (const [foot, h] of Object.entries(heights)) {
+    const limit = Math.min(...h) + FOOT_CONTACT_HEIGHT;
+    // Histéresis: tras un apoyo, el pie debe levantarse de verdad antes de contar el siguiente
+    // (el talón y luego la planta rozan el umbral y no deben sonar como dos pasos)
+    const rearm = limit + FOOT_REARM_HEIGHT;
+    // El ciclo es circular: se recorre empezando en un instante con el pie en el aire
+    const start = Math.max(0, h.findIndex((y) => y > rearm));
+    let armed = false;
+    for (let k = 1; k <= samples; k++) {
+      const i = ((start + k - 1) % samples) + 1; // Recorre el ciclo desde que el pie está arriba
+      if (h[i - 1] > rearm) armed = true;
+      if (armed && h[i - 1] > limit && h[i] <= limit) {
+        armed = false;
+        // Interpolación entre las dos muestras para un instante más preciso
+        const f = (h[i - 1] - limit) / (h[i - 1] - h[i]);
+        steps.push({ time: ((i - 1 + f) / samples) * clip.duration, foot });
+      }
+    }
+  }
+  return steps.sort((a, b) => a.time - b.time);
+}
+
 export class Player {
   constructor(scene) {
     this.scene = scene;
@@ -124,6 +170,11 @@ export class Player {
     this.attackPrevTime = 0;
     // Datos del golpe (se reutiliza el mismo objeto en cada impacto)
     this.attackInfo = { origin: new THREE.Vector3(), direction: new THREE.Vector3(), reach: ATTACK.reach, halfAngle: ATTACK.halfAngle, damage: 1 };
+
+    // Pasos: instantes de apoyo de cada pie en Walk y Run (se calculan al cargar el modelo)
+    this.footstepTimes = { walk: [], run: [] }; // [{ time, foot }]
+    this.footstepPrev = { walk: null, run: null };
+    this.onFootstep = null; // ({ running, foot }) => void. Lo asigna el juego (sonido)
 
     // Vectores reutilizables (evita crear objetos en cada fotograma)
     this.cameraForward = new THREE.Vector3();
@@ -168,6 +219,8 @@ export class Player {
     const grip = buildGripClip(clips.chop, Object.values(clips));
     this.mixer.clipAction(grip).play();
     for (const [key, clip] of Object.entries(clips)) this.actions[key] = this.mixer.clipAction(clip);
+    this.footstepTimes.walk = computeFootstepTimes(this.model, clips.walk);
+    this.footstepTimes.run = computeFootstepTimes(this.model, clips.run);
     console.info(`[Timber Rush] Animaciones del personaje: ${gltf.animations.map((c) => c.name).join(', ')}`);
 
     this.attachAxeSocket();
@@ -329,6 +382,30 @@ export class Player {
     this.model.rotation.y = this.yaw;
     this.mixer.update(dt);
     this.detectAttackImpact();
+    this.detectFootsteps();
+  }
+
+  /**
+   * Pasos: cuando la animación de caminar o correr cruza el instante en que un pie toca el
+   * suelo, avisa (una vez por pie y ciclo). Sigue el ritmo real de la animación (timeScale).
+   * Quieto, golpeando o en una transición poco visible, no hay pasos.
+   */
+  detectFootsteps() {
+    for (const name of ['walk', 'run']) {
+      const action = this.actions[name];
+      if (this.currentAction !== action || action.getEffectiveWeight() <= 0.5) {
+        this.footstepPrev[name] = null;
+        continue;
+      }
+      const t = action.time;
+      const prev = this.footstepPrev[name];
+      this.footstepPrev[name] = t;
+      if (prev === null) continue; // Primer fotograma: solo se toma la referencia
+      for (const step of this.footstepTimes[name]) {
+        const crossed = prev <= t ? prev < step.time && t >= step.time : prev < step.time || t >= step.time;
+        if (crossed) this.onFootstep?.({ running: name === 'run', foot: step.foot });
+      }
+    }
   }
 
   /**

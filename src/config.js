@@ -13,19 +13,20 @@ export const FORESTS = [
 
     // Distribución (determinista: misma semilla = mismo bosque)
     seed: 1337,
-    treeCount: 300, // Árboles talables (mallas individuales)
+    treeCount: 1400, // Árboles talables (bosque muy frondoso; InstancedMesh por modelo)
     treeSpacing: 2.3, // Distancia mínima entre troncos (m): deja ≥ 1,5 m libres para caminar
     // Proporciones independientes: cada árbol tiene su propia altura y anchura
     treeHeight: [0.85, 1.5],
     treeWidth: [0.8, 1.2],
-    groveCount: 16, // Núcleos de densidad (arboledas) dentro de la zona jugable
+    groveCount: 30, // Núcleos de densidad (arboledas) dentro de la zona jugable
+    baseDensity: 0.4, // Densidad fuera de las arboledas (0..1): casi no quedan zonas abiertas
     pineRatio: 0.6, // 60 % pinos, 40 % copa redonda
-    rockCount: 16,
-    decorativeTreeCount: 360, // Árboles decorativos fuera de la zona jugable (InstancedMesh)
+    rockCount: 24,
+    decorativeTreeCount: 800, // Árboles decorativos fuera de la zona jugable (InstancedMesh)
     deadTreeRatio: 0.06, // Proporción de árboles secos en la franja exterior
-    bushCount: 90,
-    smallPlantCount: 600, // Hierba + flores (InstancedMesh)
-    fallenLogCount: 12, // Troncos caídos decorativos (con colisión)
+    bushCount: 320,
+    smallPlantCount: 1800, // Hierba + flores (InstancedMesh)
+    fallenLogCount: 20, // Troncos caídos decorativos (con colisión)
 
     // Niebla muy sutil: empieza lejos y solo funde el horizonte con el cielo
     fog: { near: 110, far: 340 },
@@ -72,6 +73,50 @@ export const ATTACK = {
   halfAngle: Math.PI / 3, // Arco frontal: el objetivo debe estar a ±60° de hacia donde mira
 };
 
+// ---------- Mochila y recolección (Fase 7A) ----------
+export const BACKPACK = {
+  capacities: [20, 40, 80], // Unidades por nivel de mochila (1, 2, 3). Las mejoras: Fase 8
+  pickupRadius: 1.2, // Distancia (m) entre el personaje y un tronco para recogerlo automáticamente
+  pickupDuration: 0.25, // Duración (s) del vuelo del tronco hasta el personaje
+  pickupHeight: 1.0, // Altura (m) sobre los pies a la que llegan los troncos
+  fullNoticeCooldown: 2.5, // Tiempo mínimo (s) entre avisos de "mochila llena"
+};
+
+// ---------- Economía (Fase 7B: venta) ----------
+// Precios de las mejoras APROBADOS en la planificación (solo datos: la tienda y las compras se
+// implementan en la Fase 8). Clave = nivel que se compra.
+export const UPGRADES = {
+  axe: { name: 'Hacha', costs: { 2: 50, 3: 150 } }, // Niveles 1..3 (daño 1 / 2 / 4)
+  backpack: { name: 'Mochila', costs: { 2: 100, 3: 300 } }, // Capacidad 20 → 40 → 80
+  workers: { name: 'Trabajador', costs: { 1: 500, 2: 1000 } }, // 0..2 trabajadores
+  sawmill: {
+    name: 'Aserradero',
+    costs: { 1: 2000, 2: 5000, 3: 10000, 4: 20000, 5: 40000, 6: 75000, 7: 125000, 8: 200000, 9: 350000, 10: 500000 },
+  },
+};
+
+export const ECONOMY = {
+  sawmillBonusPerLevel: 0.25, // Cada nivel del aserradero: +25 % al valor de venta (máx. +250 %)
+};
+
+// Venta en la plataforma del aserradero (Fase 7B)
+export const SALE = {
+  key: 'KeyF',
+  particleCount: 22, // Monedas doradas por venta (cantidad moderada)
+  particleLife: [0.8, 1.4], // Duración de cada partícula (s)
+  counterDuration: 0.9, // Animación del contador de monedas (s)
+  // Secuencia de la celebración (segundos desde la confirmación de Appwrite):
+  //   0,00 anuncio + monedas 3D + Bonus Points (Do mayor, 0,60 s) y conteo de "+N"
+  //   0,45 Reward Chime (0,96 s) con los destellos, solapado solo con la cola de Bonus
+  //   1,40 Level Up (Do menor) y brillo del nuevo saldo: entra cuando el Chime ya terminó
+  //        (evita que su final en Re/Fa# choque con el Do menor de Level Up)
+  //   2,60 salida del anuncio (0,4 s)
+  timeline: { chime: 0.45, levelUp: 1.4, exit: 2.6, exitDuration: 0.4 },
+  // Otra venta durante la celebración: el anuncio acumula el total; suenan Bonus Points y,
+  // al terminar éste, Level Up (sin repetir el Chime) y la salida se retrasa.
+  mergeTimeline: { levelUp: 0.6, exit: 1.8 },
+};
+
 // Árboles: resistencia, caída, madera y regeneración
 export const CHOPPING = {
   regrowTime: 25, // Segundos desde el último golpe hasta que el árbol vuelve a crecer
@@ -105,5 +150,19 @@ export const AUDIO = {
     tree_impact: { file: 'tree_fall.wav', offset: 1.58, duration: 1.05, volume: 1.0, cooldown: 0.3, maxConcurrent: 2 },
     // Capa grave del impacto (el tronco pesado golpea la tierra): suena junto a tree_impact
     ground_thud: { files: ['ground_thud_0.wav', 'ground_thud_1.wav', 'ground_thud_2.wav', 'ground_thud_3.wav', 'ground_thud_4.wav'], volume: 0.85, cooldown: 0.3, maxConcurrent: 2, pitchVariation: 0.08 },
+    // Pasos del Worker (posicionales, en sus pies): una variante al azar por paso y ligera
+    // variación de tono y de volumen (±15 %) para que no suenen repetitivos. Suaves: se oyen
+    // sin destacar sobre el resto. Al correr suenan algo más fuertes.
+    // Archivos recortados y nivelados con herramientas/procesar_pasos.mjs (Kenney, CC0).
+    step_grass: { files: ['step_grass_0.wav', 'step_grass_1.wav', 'step_grass_2.wav', 'step_grass_3.wav', 'step_grass_4.wav'], volume: 0.12, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.08 },
+    step_grass_run: { files: ['step_grass_0.wav', 'step_grass_1.wav', 'step_grass_2.wav', 'step_grass_3.wav', 'step_grass_4.wav'], volume: 0.2, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.08 },
+    step_wood: { files: ['step_wood_0.wav', 'step_wood_1.wav', 'step_wood_2.wav', 'step_wood_3.wav', 'step_wood_4.wav'], volume: 0.13, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
+    step_wood_run: { files: ['step_wood_0.wav', 'step_wood_1.wav', 'step_wood_2.wav', 'step_wood_3.wav', 'step_wood_4.wav'], volume: 0.21, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
+    // Venta confirmada (Fase 7B): sonidos de INTERFAZ (sin atenuación por distancia), ya
+    // recortados y con la misma sonoridad (herramientas/procesar_audio_venta.mjs). Volúmenes
+    // algo por debajo del hacha percibida a la distancia habitual de la cámara.
+    sale_bonus: { file: 'sale_bonus.wav', ui: true, volume: 0.45 }, // Bonus Points (Liecio)
+    sale_chime: { file: 'sale_chime.wav', ui: true, volume: 0.38 }, // Reward Chime (Universfield)
+    sale_levelup: { file: 'sale_levelup.wav', ui: true, volume: 0.42 }, // Level Up 06 (Universfield)
   },
 };

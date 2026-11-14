@@ -1,0 +1,586 @@
+// progressSync.js — Sincronización de la mochila con Appwrite (Fase 7A).
+//
+// Coordina el estado LOCAL (la mochila en memoria y la madera recogida) con el REMOTO (la fila
+// "progress" del usuario). No conoce el DOM ni las mecánicas de tala: recibe las funciones de la
+// API (appwrite.js) y avisa de su estado con onStatus(estado, detalle).
+//
+// Venta (Fase 7B): una sola escritura atómica con la misma protección por versión que vacía lo
+// vendido (mochila y almacén) y fija coins / totalCoinsEarned en valores ABSOLUTOS calculados
+// desde el último estado confirmado. Una venta nunca se reenvía automáticamente: si no hay
+// respuesta, solo se VERIFICA leyendo la fila. onSale(venta) se emite una única vez por venta y
+// solo cuando está confirmada; onSaleFailed(venta) si se sabe que no se aplicó.
+//
+// Qué se guarda (sin cambiar el esquema):
+//   resources          (texto JSON)  → { backpack: { wood: { '1': 12 } }, storage: {…} }
+//                                       Solo se reemplaza "backpack"; "storage" y cualquier otra
+//                                       clave se conservan tal cual se leyeron.
+//   totalWoodCollected (entero)      → valor ABSOLUTO (leído + recogido desde entonces)
+//   saveVersion        (entero)      → lo sube Appwrite en la escritura condicional
+//
+// Reglas de seguridad:
+// - Nunca se escribe en cada fotograma: debounce de 4 s con un máximo de 10 s desde el primer
+//   cambio pendiente (una recogida continua no pospone el guardado indefinidamente).
+// - Una sola escritura a la vez por instancia del juego.
+// - Cada escritura es condicional (saveVersion) y atómica (transacción, ver appwrite.js).
+// - Antes del primer guardado de cada sesión se comprueba que el servidor aplica la condición
+//   como se espera; si no, el guardado se desactiva y se muestra un error (no se ajusta nada).
+// - Tras el primer guardado se lee la fila para comprobar que versión y datos se aplicaron juntos.
+// - Se guarda el ESTADO COMPLETO (no incrementos): repetir un guardado no duplica madera.
+// - Si no hay respuesta, no se sabe si se guardó: antes de reintentar se lee la fila.
+// - "Guardado" solo se indica tras una confirmación fiable.
+// - Ante cualquier error, la mochila en memoria se conserva.
+
+export const SAVE_STATUS = {
+  IDLE: 'idle', // Sin cambios pendientes
+  PENDING: 'pending', // Hay cambios sin guardar (esperando el debounce)
+  SAVING: 'saving',
+  SAVED: 'saved', // Confirmado por Appwrite
+  RETRYING: 'retrying', // Error de conexión: se reintentará automáticamente
+  CONFLICT: 'conflict', // Conflicto real de versiones: otra sesión guardó antes
+  PERMISSION: 'permission', // Error de permisos o sesión
+  UNSUPPORTED: 'unsupported', // Transacciones no disponibles en este servidor o plan
+  CONDITION: 'condition', // Fallo inesperado en la condición del incremento o en la atomicidad
+  BLOCKED: 'blocked', // Los datos guardados están dañados: no se sobrescriben
+  ERROR: 'error', // Datos rechazados por el servidor
+};
+
+// Estados en los que no se vuelve a escribir hasta recargar la página (requieren revisión)
+const HALTED = new Set([SAVE_STATUS.CONFLICT, SAVE_STATUS.CONDITION, SAVE_STATUS.BLOCKED]);
+// Estados sin reintento automático (pausar, volver al menú o el aviso de cerrar sesión sí reintentan)
+const MANUAL_RETRY = new Set([SAVE_STATUS.PERMISSION, SAVE_STATUS.UNSUPPORTED, SAVE_STATUS.ERROR]);
+
+export const SYNC_SETTINGS = {
+  debounce: 4000, // ms sin cambios antes de guardar
+  maxWait: 10000, // ms máximos desde el primer cambio pendiente
+  retryDelays: [5000, 15000, 30000, 60000], // Esperas entre reintentos (la última se repite)
+  maxResourcesLength: 1000, // Tamaño de la columna "resources" en Appwrite
+};
+
+const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
+const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
+const isCount = (x) => Number.isInteger(x) && x >= 0;
+const pickSaved = (data) => ({ resources: data.resources, totalWoodCollected: data.totalWoodCollected });
+
+/** Suma dos contenidos { recurso: { idBosque: n } }. */
+function mergeContents(a, b) {
+  const out = structuredClone(a ?? {});
+  for (const [resource, byForest] of Object.entries(b ?? {})) {
+    for (const [forestId, n] of Object.entries(byForest)) (out[resource] ??= {})[forestId] = (out[resource][forestId] ?? 0) + n;
+  }
+  return out;
+}
+
+/** Contenido "a" menos lo vendido "b" (sin entradas a cero). */
+function subtractContents(a, b) {
+  const out = {};
+  for (const [resource, byForest] of Object.entries(a ?? {})) {
+    if (!isPlainObject(byForest)) continue;
+    for (const [forestId, n] of Object.entries(byForest)) {
+      const left = n - (b?.[resource]?.[forestId] ?? 0);
+      if (left > 0) (out[resource] ??= {})[forestId] = left;
+    }
+  }
+  return out;
+}
+
+export class ProgressSync {
+  /**
+   * @param api   { getProfile(userId), save(userId, expectedVersion, data),
+   *                probe(userId, currentVersion), classify(error) }
+   * @param clock { now(), setTimeout(fn, ms), clearTimeout(id) } (se sustituye en las pruebas)
+   */
+  constructor({ api, saleValue = null, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
+    this.api = api;
+    this.saleValue = saleValue; // (contenido, nivelAserradero) => { sold, units, coins } (economy.js)
+    this.clock = clock;
+    this.s = settings;
+    this.onStatus = () => {}; // (estado, detalle) => void
+    this.onSale = () => {}; // (venta confirmada) => void — una sola vez por venta
+    this.onSaleFailed = () => {}; // (venta, motivo) => void
+    this.saleSeq = 0; // Identificador de cada venta (no se reinicia al cambiar de cuenta)
+    this.reset();
+  }
+
+  reset() {
+    this.attached = false;
+    this.userId = null;
+    this.backpack = null;
+    this.version = 0; // saveVersion confirmado en Appwrite
+    this.base = { ...DEFAULT_RESOURCES }; // "resources" leído (se conserva todo menos backpack)
+    this.confirmed = null; // { resources, totalWoodCollected } confirmados en Appwrite
+    this.totalWood = 0;
+    this.dirty = false;
+    this.dirtySince = null;
+    this.uncertain = null; // { snapshot, expected } si un intento terminó sin saber el resultado
+    this.inFlight = null; // Promesa del guardado en curso (una sola a la vez)
+    this.timer = null;
+    this.retryTimer = null;
+    this.retryIndex = 0;
+    this.restoring = false;
+    this.guardChecked = false; // Comprobación de la condición hecha en esta sesión
+    this.firstSaveVerified = false; // Atomicidad comprobada tras el primer guardado
+    this.lastError = null; // Diagnóstico del último error { kind, type, code, message, at }
+    this.coins = 0; // Monedas disponibles CONFIRMADAS en Appwrite (fuente de verdad local)
+    this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
+    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
+    this.saleInFlight = false;
+    this.status = SAVE_STATUS.IDLE;
+  }
+
+  /** ¿Hay algo que todavía no está confirmado en Appwrite? */
+  get hasUnsaved() {
+    return this.attached && (this.dirty || this.inFlight !== null || this.uncertain !== null);
+  }
+
+  get halted() {
+    return HALTED.has(this.status);
+  }
+
+  setStatus(status, detail = null) {
+    this.status = status;
+    this.onStatus(status, detail);
+  }
+
+  /** Registra el error con datos para diagnosticarlo y cambia de estado. */
+  fail(status, kind, error, message) {
+    this.lastError = { kind, type: error?.type ?? null, code: error?.code ?? null, message: error?.message ?? String(error ?? ''), at: new Date(this.clock.now()).toISOString() };
+    const tag = this.lastError.type || this.lastError.code ? ` [${[this.lastError.type, this.lastError.code].filter((x) => x !== null && x !== '').join(', ')}]` : '';
+    console.error(`[Timber Rush] Guardado de la mochila — ${kind}: ${message}`, this.lastError);
+    this.setStatus(status, `${message}${tag}`);
+    return { ok: false, status, kind };
+  }
+
+  // ---------- Restaurar al iniciar sesión ----------
+
+  /**
+   * Conecta la mochila con la fila de progreso ya leída (getProfile) y restaura su contenido.
+   * Solo se llama con una fila leída correctamente: un error de lectura no llega aquí (el inicio
+   * de sesión falla y no se entra al juego), así que nunca se confunde con una mochila vacía.
+   * @returns { damaged } true si los datos guardados no son válidos (no se sobrescribirán)
+   */
+  attach(userId, profile, backpack) {
+    this.detach();
+    this.userId = userId;
+    this.backpack = backpack;
+    this.attached = true;
+
+    const resources = this.parseResources(profile.resources);
+    const total = profile.totalWoodCollected ?? 0;
+    const version = profile.saveVersion ?? 0;
+    const coins = profile.coins ?? 0;
+    const totalCoins = profile.totalCoinsEarned ?? 0;
+    let damaged = resources === null || !isCount(total) || !isCount(version) || !isCount(coins) || !isCount(totalCoins);
+
+    this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
+    backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
+    if (resources) {
+      if (backpack.load(resources.backpack) > 0) damaged = true;
+      this.base = resources;
+    } else {
+      backpack.clear();
+    }
+    this.restoring = false;
+
+    this.totalWood = isCount(total) ? total : 0;
+    this.version = isCount(version) ? version : 0;
+    this.coins = isCount(coins) ? coins : 0;
+    this.totalCoinsEarned = isCount(totalCoins) ? totalCoins : 0;
+    this.levels = {
+      axeLevel: profile.axeLevel ?? 1,
+      backpackLevel: profile.backpackLevel ?? 1,
+      workers: profile.workers ?? 0,
+      sawmillLevel: profile.sawmillLevel ?? 0,
+    };
+    this.confirmed = { resources: profile.resources ?? null, totalWoodCollected: profile.totalWoodCollected ?? null };
+    if (damaged) {
+      this.fail(SAVE_STATUS.BLOCKED, 'datos-dañados', null, 'Los datos guardados de la mochila no son válidos: no se sobrescribirán.');
+    } else {
+      this.setStatus(SAVE_STATUS.IDLE);
+    }
+    return { damaged };
+  }
+
+  /**
+   * "resources" válido → objeto; vacío o sin definir → valores por defecto (mochila vacía
+   * legítima); dañado → null.
+   */
+  parseResources(raw) {
+    if (raw === undefined || raw === null || raw === '') return { ...DEFAULT_RESOURCES };
+    let value = raw;
+    if (typeof raw === 'string') {
+      try {
+        value = JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    }
+    if (!isPlainObject(value)) return null;
+    if (value.backpack !== undefined && !isPlainObject(value.backpack)) return null;
+    return { ...DEFAULT_RESOURCES, ...value, backpack: value.backpack ?? {} };
+  }
+
+  /** Al cerrar sesión: deja de sincronizar (no borra nada en Appwrite). */
+  detach() {
+    if (this.timer) this.clock.clearTimeout(this.timer);
+    if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
+    this.reset();
+  }
+
+  // ---------- Cambios locales ----------
+
+  /** La mochila cambió (recoger, vaciar, cambiar de nivel). */
+  markDirty() {
+    if (!this.attached || this.restoring) return;
+    this.dirty = true;
+    this.dirtySince ??= this.clock.now();
+    if (this.halted || MANUAL_RETRY.has(this.status)) return; // Se conserva en memoria
+    if (this.status !== SAVE_STATUS.SAVING && this.status !== SAVE_STATUS.RETRYING) this.setStatus(SAVE_STATUS.PENDING);
+    this.schedule();
+  }
+
+  /** Madera recogida (para totalWoodCollected). */
+  recordCollected(units) {
+    if (!this.attached || units <= 0) return;
+    this.totalWood += units;
+    this.markDirty();
+  }
+
+  /** Programa el guardado: 4 s sin cambios, o como mucho 10 s desde el primer cambio pendiente. */
+  schedule() {
+    if (this.retryTimer) return; // Hay un reintento programado: incluirá los últimos datos
+    const now = this.clock.now();
+    const due = Math.min(now + this.s.debounce, this.dirtySince + this.s.maxWait);
+    if (this.timer) this.clock.clearTimeout(this.timer);
+    this.timer = this.clock.setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, Math.max(0, due - now));
+  }
+
+  /** Datos que se escribirán (estado completo actual). */
+  snapshot() {
+    const resources = JSON.stringify({ ...this.base, backpack: this.backpack.toJSON() });
+    return { resources, totalWoodCollected: this.totalWood };
+  }
+
+  // ---------- Guardar ----------
+
+  /**
+   * Guarda ahora los cambios pendientes (pausa, menú, cerrar sesión, cerrar pestaña).
+   * Si ya hay un guardado en curso, espera a que termine y, si siguen quedando cambios, guarda
+   * otra vez. Nunca hay dos escrituras en paralelo.
+   * @returns { ok, status } ok = todo lo local está confirmado en Appwrite
+   */
+  async flush() {
+    if (this.timer) {
+      this.clock.clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (!this.attached) return { ok: true, status: this.status };
+    if (this.halted) return { ok: !this.dirty && this.status !== SAVE_STATUS.CONDITION, status: this.status };
+    if (this.inFlight) {
+      await this.inFlight;
+      if (!this.attached) return { ok: true, status: this.status };
+      return (this.dirty || this.uncertain) && !this.halted ? this.flush() : { ok: !this.dirty && !this.uncertain, status: this.status };
+    }
+    if (!this.dirty && !this.uncertain) return { ok: true, status: this.status };
+    if (this.retryTimer) {
+      this.clock.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.inFlight = this.write('save').finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
+  // ---------- Vender (Fase 7B) ----------
+
+  /**
+   * Vende la madera de la mochila (y del almacén) en una escritura condicional y atómica.
+   * Espera a que termine cualquier guardado en curso. Si ya hay una venta en curso, no hace nada.
+   * @returns { ok, sale } si se confirmó; { ok: false, reason | pending } si no.
+   */
+  async sell() {
+    if (!this.attached) return { ok: false, reason: 'sin-sesión' };
+    if (this.saleInFlight) return { ok: false, reason: 'en-curso' };
+    if (this.halted) return { ok: false, reason: this.status };
+    this.saleInFlight = true;
+    try {
+      while (this.inFlight) await this.inFlight; // Una sola escritura a la vez
+      if (!this.attached) return { ok: false, reason: 'sin-sesión' };
+      if (this.halted) return { ok: false, reason: this.status };
+      if (this.timer) this.clock.clearTimeout(this.timer);
+      if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
+      this.timer = this.retryTimer = null; // La venta escribe el estado completo actual
+      this.inFlight = this.write('sale').finally(() => {
+        this.inFlight = null;
+      });
+      return await this.inFlight;
+    } finally {
+      this.saleInFlight = false;
+    }
+  }
+
+  /** Prepara la venta: qué se vende, cuánto vale y los datos que quedarán en Appwrite. */
+  planSale() {
+    const lvl = this.levels.sawmillLevel;
+    const backpack = this.backpack.toJSON();
+    const storage = isPlainObject(this.base.storage) ? this.base.storage : {};
+    const fromBackpack = this.saleValue(backpack, lvl).sold;
+    const fromStorage = this.saleValue(storage, lvl).sold;
+    const { units, coins } = this.saleValue(mergeContents(fromBackpack, fromStorage), lvl);
+    if (units === 0) return null;
+    const storageAfter = subtractContents(storage, fromStorage);
+    const data = {
+      resources: JSON.stringify({ ...this.base, backpack: subtractContents(backpack, fromBackpack), storage: storageAfter }),
+      totalWoodCollected: this.totalWood,
+      coins: this.coins + coins,
+      totalCoinsEarned: this.totalCoinsEarned + coins,
+    };
+    const sale = { id: ++this.saleSeq, fromBackpack, storageAfter, units, earned: coins, done: false };
+    return { data, sale };
+  }
+
+  /** La venta está confirmada: se aplica en local y se celebra (una sola vez). */
+  applySale(sale, data) {
+    if (sale.done) return;
+    sale.done = true;
+    const before = this.coins;
+    this.coins = data.coins;
+    this.totalCoinsEarned = data.totalCoinsEarned;
+    this.base = { ...this.base, storage: sale.storageAfter };
+    this.restoring = true; // Retirar lo vendido no es un cambio pendiente de guardar
+    this.backpack.remove(sale.fromBackpack); // Lo recogido durante la venta se conserva
+    this.restoring = false;
+    this.onSale({ id: sale.id, earned: sale.earned, units: sale.units, coinsBefore: before, coins: this.coins, totalCoinsEarned: this.totalCoinsEarned });
+  }
+
+  /**
+   * Se sabe que la venta NO se aplicó: ni monedas ni celebración (una sola vez).
+   * deferred = el resultado se conoce más tarde (la venta había quedado pendiente): se avisa con
+   * onSaleFailed. Si se sabe en la misma llamada a sell(), el aviso lo da su resultado.
+   */
+  saleFailed(sale, reason, deferred = false) {
+    if (!sale || sale.done) return;
+    sale.done = true;
+    if (deferred) this.onSaleFailed({ id: sale.id, reason });
+  }
+
+  // ---------- Escritura (guardar o vender) ----------
+
+  async write(mode) {
+    const userId = this.userId;
+    const stale = () => this.userId !== userId; // Se cerró sesión mientras se esperaba
+    try {
+      // 1. Un intento anterior terminó sin respuesta: averiguar si llegó a guardarse
+      if (this.uncertain) {
+        const { snapshot, expected, sale } = this.uncertain;
+        const row = await this.api.getProfile(userId);
+        if (stale()) return { ok: true, status: this.status };
+        const outcome = this.compare(row, snapshot, expected);
+        if (outcome === 'other') {
+          this.saleFailed(sale, 'conflicto', true);
+          return this.conflictFound(row, expected);
+        }
+        this.uncertain = null; // Ya se sabe si se aplicó
+        if (outcome === 'applied') {
+          this.version = expected + 1;
+          this.confirmed = pickSaved(snapshot);
+          this.firstSaveVerified = true; // Versión y datos aplicados juntos (comprobado en la fila)
+          if (sale) this.applySale(sale, snapshot); // Venta sin respuesta que sí se aplicó
+          if (this.snapshotEquals(snapshot)) {
+            this.dirty = false; // Lo guardado coincide con lo local: no hace falta reescribir
+            this.dirtySince = null;
+            if (mode === 'save') return this.confirmSaved();
+          }
+        } else {
+          this.saleFailed(sale, 'no-aplicada', true); // La venta sin respuesta no llegó a aplicarse
+        }
+      }
+
+      // 2. Primera vez en la sesión: comprobar que el servidor aplica la condición como se espera
+      if (!this.guardChecked) {
+        const result = await this.api.probe(userId, this.version);
+        if (stale()) return { ok: true, status: this.status };
+        if (result !== 'strict') {
+          this.version += 1; // La comprobación se aplicó: saveVersion subió (sin tocar datos)
+          return this.fail(SAVE_STATUS.CONDITION, 'condición-no-fiable', null, 'Appwrite aceptó un incremento que debía rechazar: la protección por versión no es fiable en este servidor. El guardado se ha desactivado; tu mochila sigue en memoria.');
+        }
+        this.guardChecked = true;
+      }
+
+      // 3. Escritura condicional del estado completo actual (y, si es una venta, sus monedas)
+      let snapshot = null;
+      let sale = null;
+      if (mode === 'sale') {
+        const plan = this.planSale();
+        if (!plan) {
+          this.confirmSaved();
+          return { ok: false, reason: 'vacía', status: this.status };
+        }
+        ({ data: snapshot, sale } = plan);
+      } else {
+        if (!this.dirty) return this.confirmSaved(); // La verificación anterior ya lo dejó guardado
+        snapshot = this.snapshot();
+      }
+      if (snapshot.resources.length > this.s.maxResourcesLength) {
+        this.saleFailed(sale, 'datos-demasiado-grandes');
+        return this.fail(SAVE_STATUS.ERROR, 'datos-demasiado-grandes', null, 'La mochila no cabe en la columna resources (1000 caracteres).');
+      }
+      const expected = this.version;
+      this.dirty = false;
+      this.dirtySince = null;
+      this.setStatus(SAVE_STATUS.SAVING, sale ? 'Vendiendo…' : null);
+      let newVersion;
+      try {
+        newVersion = await this.api.save(userId, expected, snapshot);
+      } catch (error) {
+        if (stale()) return { ok: false, status: this.status };
+        return this.handleFailure(error, snapshot, expected, sale);
+      }
+      if (stale()) return { ok: true, status: this.status };
+      this.version = newVersion;
+
+      // 4. Primer guardado de la sesión: leer la fila y comprobar que versión y datos se
+      //    aplicaron JUNTOS (atomicidad). Hasta entonces no se muestra "Guardado".
+      if (!this.firstSaveVerified) {
+        let row;
+        try {
+          row = await this.api.getProfile(userId);
+        } catch (error) {
+          // Appwrite confirmó, pero no se pudo comprobar: el próximo intento verificará leyendo
+          if (!stale()) this.uncertain = { snapshot, expected, sale };
+          throw error;
+        }
+        if (stale()) return { ok: true, status: this.status };
+        if (this.compare(row, snapshot, expected) !== 'applied') {
+          this.dirty = true;
+          this.saleFailed(sale, 'atomicidad');
+          return this.fail(SAVE_STATUS.CONDITION, 'atomicidad', null, 'Tras guardar, la versión y los datos de Appwrite no coinciden con lo enviado. El guardado se ha desactivado; tu mochila sigue en memoria.');
+        }
+        this.firstSaveVerified = true;
+      }
+      this.confirmed = pickSaved(snapshot);
+      if (sale) {
+        this.applySale(sale, snapshot);
+        return { ...this.confirmSaved(), ok: true, sale: { id: sale.id, earned: sale.earned } };
+      }
+      return this.confirmSaved();
+    } catch (error) {
+      // Error al leer o en la comprobación inicial: se clasifica igual que un guardado
+      if (stale()) return { ok: false, status: this.status };
+      this.dirty = true;
+      return this.handleKind(this.api.classify(error), error);
+    }
+  }
+
+  confirmSaved() {
+    this.retryIndex = 0;
+    if (this.dirty) {
+      this.setStatus(SAVE_STATUS.PENDING);
+      this.schedule(); // Llegaron cambios mientras se guardaba
+    } else {
+      this.setStatus(SAVE_STATUS.SAVED);
+    }
+    return { ok: !this.dirty, status: this.status };
+  }
+
+  /** Un guardado falló. Los datos locales nunca se descartan. */
+  async handleFailure(error, snapshot, expected, sale = null) {
+    this.dirty = true; // Lo local sigue pendiente
+    this.dirtySince ??= this.clock.now();
+    const kind = this.api.classify(error);
+
+    if (kind === 'condition') {
+      // La condición del incremento no se cumplió: se lee la fila para saber por qué
+      const userId = this.userId;
+      const row = await this.api.getProfile(userId);
+      if (this.userId !== userId) return { ok: false, status: this.status };
+      if (row && row.saveVersion === expected) {
+        // La versión NO cambió y aun así se rechazó: no es un conflicto. No se ajusta nada.
+        const untouched = row.resources === this.confirmed?.resources && row.totalWoodCollected === this.confirmed?.totalWoodCollected;
+        this.saleFailed(sale, 'condición');
+        return this.fail(SAVE_STATUS.CONDITION, untouched ? 'fallo-condición' : 'atomicidad', error, untouched
+          ? `Appwrite rechazó la condición de saveVersion aunque la versión era la esperada (${expected}). El guardado se ha desactivado; tu mochila sigue en memoria.`
+          : 'La condición de saveVersion falló pero los datos de la fila cambiaron: posible escritura parcial. El guardado se ha desactivado.');
+      }
+      if (this.compare(row, snapshot, expected) === 'applied') {
+        this.version = expected + 1;
+        this.confirmed = pickSaved(snapshot);
+        if (sale) this.applySale(sale, snapshot);
+        if (this.snapshotEquals(snapshot)) {
+          this.dirty = false;
+          this.dirtySince = null;
+        }
+        return this.confirmSaved();
+      }
+      this.saleFailed(sale, 'conflicto');
+      return this.conflictFound(row, expected, error);
+    }
+    if (kind === 'network' || kind === 'tx-conflict') {
+      // No se sabe si se aplicó (o la fila cambió mientras se preparaba): se verificará antes.
+      // Una venta NO se reenvía: solo se comprobará si llegó a aplicarse.
+      this.uncertain = { snapshot, expected, sale };
+      return { ...this.handleKind(kind, error), pending: Boolean(sale) };
+    }
+    this.saleFailed(sale, kind);
+    return this.handleKind(kind, error);
+  }
+
+  handleKind(kind, error) {
+    if (kind === 'network' || kind === 'tx-conflict') return this.scheduleRetry(error, kind);
+    if (kind === 'permission') return this.fail(SAVE_STATUS.PERMISSION, 'permisos', error, 'Sin permiso para guardar (¿sesión caducada?). Tu mochila sigue en memoria.');
+    if (kind === 'unsupported') return this.fail(SAVE_STATUS.UNSUPPORTED, 'transacción-no-compatible', error, 'Este servidor de Appwrite no admite las transacciones necesarias. Tu mochila sigue en memoria.');
+    if (kind === 'condition') return this.fail(SAVE_STATUS.CONDITION, 'fallo-condición', error, 'La comprobación de saveVersion falló de forma inesperada. Tu mochila sigue en memoria.');
+    return this.fail(SAVE_STATUS.ERROR, 'datos-rechazados', error, 'Appwrite rechazó los datos de la mochila. Tu mochila sigue en memoria.');
+  }
+
+  /**
+   * Compara la fila con un intento:
+   *  'applied'     → tiene la versión siguiente y exactamente esos datos
+   *  'not-applied' → la versión sigue igual
+   *  'other'       → otra sesión la cambió
+   */
+  compare(row, snapshot, expected) {
+    if (!row) return 'other';
+    if (row.saveVersion === expected) return 'not-applied';
+    // Todas las columnas enviadas (en una venta también coins y totalCoinsEarned)
+    const same = row.saveVersion === expected + 1 && Object.keys(snapshot).every((k) => row[k] === snapshot[k]);
+    return same ? 'applied' : 'other';
+  }
+
+  snapshotEquals(snapshot) {
+    const now = this.snapshot();
+    return now.resources === snapshot.resources && now.totalWoodCollected === snapshot.totalWoodCollected;
+  }
+
+  /** Conflicto real de versiones: otra sesión guardó. No se escribe nada más. */
+  conflictFound(row, expected, error = null) {
+    this.dirty = true;
+    this.uncertain = null;
+    if (this.timer) this.clock.clearTimeout(this.timer);
+    if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
+    this.timer = this.retryTimer = null;
+    const remote = row?.saveVersion ?? '?';
+    return this.fail(SAVE_STATUS.CONFLICT, 'conflicto-versiones', error, `Tu progreso se modificó desde otra sesión (versión ${remote}, esperada ${expected}). No se ha sobrescrito: recarga la página. Tu mochila sigue en memoria.`);
+  }
+
+  scheduleRetry(error, kind) {
+    const delays = this.s.retryDelays;
+    const delay = delays[Math.min(this.retryIndex, delays.length - 1)];
+    this.retryIndex++;
+    this.dirty = true;
+    this.dirtySince ??= this.clock.now();
+    if (this.retryTimer) this.clock.clearTimeout(this.retryTimer);
+    this.retryTimer = this.clock.setTimeout(() => {
+      this.retryTimer = null;
+      this.flush();
+    }, delay);
+    const reason = kind === 'tx-conflict' ? 'la fila cambió mientras se guardaba; se comprobará' : 'sin conexión con Appwrite';
+    this.lastError = { kind: kind === 'tx-conflict' ? 'transacción-en-conflicto' : 'conexión', type: error?.type ?? null, code: error?.code ?? null, message: error?.message ?? String(error ?? ''), at: new Date(this.clock.now()).toISOString() };
+    console.warn(`[Timber Rush] Guardado de la mochila — ${this.lastError.kind}; reintento en ${delay / 1000} s`, this.lastError);
+    this.setStatus(SAVE_STATUS.RETRYING, `No se pudo guardar (${reason}). Reintento en ${Math.round(delay / 1000)} s.`);
+    return { ok: false, status: SAVE_STATUS.RETRYING, kind };
+  }
+}

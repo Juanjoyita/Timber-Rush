@@ -7,15 +7,26 @@
 //   no se mueve, no consume cálculo de integración y solo participa en colisiones.
 // - Formas simples: esferas (personaje, troncos y rocas), cajas (aserradero, troncos caídos
 //   y límites) y un Heightfield para el suelo.
-// - SAPBroadphase: descarta rápidamente los pares de cuerpos lejanos, así el personaje
-//   solo se compara con los obstáculos cercanos aunque haya más de 150 cuerpos.
+// - SAPBroadphase: descarta rápidamente los pares de cuerpos lejanos.
+// - Troncos activados por proximidad: cannon-es recorre TODOS los cuerpos del mundo en cada
+//   paso (aunque estén quietos y lejos), así que con un bosque muy denso la física se
+//   encarecía (0,8 ms con 300 árboles, 3,6 ms con 900). Solo están en el mundo los troncos a
+//   menos de ACTIVE_RADIUS del personaje; al alejarse más de INACTIVE_RADIUS se retiran.
+//   El coste ya no depende del tamaño del bosque y el personaje sigue chocando con todos los
+//   troncos que tiene alrededor.
 import * as CANNON from 'cannon-es';
-import { heightAt, WORLD } from './forest.js';
+import { heightAt, PLAYER_RADIUS, WORLD } from './forest.js';
 
-// Radio de la esfera física del personaje (m). Representa el volumen real del Worker: con
-// 0,35 m sus pies y brazos (que sobresalen hasta 0,47 m parado) entraban en los troncos.
-export const PLAYER_RADIUS = 0.45;
+// Radio de la esfera física del personaje: definido en forest.js (lo usa también para
+// comprobar que todos los árboles se pueden alcanzar a pie) y reexportado aquí.
+export { PLAYER_RADIUS };
 export const FIXED_STEP = 1 / 60; // Paso fijo de la simulación (s)
+
+// Activación de troncos por proximidad (m). El personaje corre a 3,5 m/s: el margen entre los
+// dos radios evita que un tronco entre y salga del mundo en cada fotograma.
+export const ACTIVE_RADIUS = 12;
+export const INACTIVE_RADIUS = 15;
+const TRUNK_CELL = 8; // Celda de la rejilla espacial de troncos (m)
 
 const TERRAIN_STEP = 2.5; // Separación de la rejilla del Heightfield = la del terreno visual
 const TERRAIN_HALF = WORLD.playHalf + TERRAIN_STEP; // Cubre la zona jugable con margen
@@ -78,10 +89,44 @@ export function createPhysics(forest) {
   const obstacleSphere = (x, z, radius) =>
     addStatic(new CANNON.Sphere(radius), x, heightAt(x, z) + PLAYER_RADIUS, z, materials.obstacle);
 
-  // Se guarda el cuerpo en el árbol (userData.body) para poder desactivarlo al talarlo (Fase 6)
+  // Troncos: el cuerpo se crea siempre (userData.body) pero solo se añade al mundo cuando el
+  // personaje está cerca (ver updateActiveTrunks). Se indexan en una rejilla espacial.
+  const trunkGrid = new Map();
   for (const tree of forest.trees) {
-    tree.userData.body = obstacleSphere(tree.position.x, tree.position.z, tree.userData.radius);
+    const { x, z } = tree.position;
+    const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
+    body.position.set(x, heightAt(x, z) + PLAYER_RADIUS, z);
+    body.addShape(new CANNON.Sphere(tree.userData.radius)); // Forma DESPUÉS de colocarlo (AABB correcta)
+    tree.userData.body = body;
+    const key = `${Math.floor(x / TRUNK_CELL)},${Math.floor(z / TRUNK_CELL)}`;
+    if (!trunkGrid.has(key)) trunkGrid.set(key, []);
+    trunkGrid.get(key).push(body);
   }
+  const activeTrunks = new Set();
+  /** Añade los troncos cercanos a "position" y retira los que quedaron lejos. */
+  const updateActiveTrunks = (position) => {
+    for (const body of activeTrunks) {
+      if (Math.hypot(body.position.x - position.x, body.position.z - position.z) > INACTIVE_RADIUS) {
+        world.removeBody(body);
+        activeTrunks.delete(body);
+      }
+    }
+    const i0 = Math.floor((position.x - ACTIVE_RADIUS) / TRUNK_CELL), i1 = Math.floor((position.x + ACTIVE_RADIUS) / TRUNK_CELL);
+    const j0 = Math.floor((position.z - ACTIVE_RADIUS) / TRUNK_CELL), j1 = Math.floor((position.z + ACTIVE_RADIUS) / TRUNK_CELL);
+    for (let i = i0; i <= i1; i++) {
+      for (let j = j0; j <= j1; j++) {
+        const list = trunkGrid.get(`${i},${j}`);
+        if (!list) continue;
+        for (const body of list) {
+          if (activeTrunks.has(body)) continue;
+          if (Math.hypot(body.position.x - position.x, body.position.z - position.z) <= ACTIVE_RADIUS) {
+            world.addBody(body);
+            activeTrunks.add(body);
+          }
+        }
+      }
+    }
+  };
   // Rocas: algo más estrechas que su silueta (son irregulares) y sin poder subirse encima
   for (const rock of forest.rocks) {
     obstacleSphere(rock.position.x, rock.position.z, rock.userData.radius * 0.8);
@@ -125,8 +170,19 @@ export function createPhysics(forest) {
     });
     body.position.set(x, heightAt(x, z) + PLAYER_RADIUS + 0.02, z);
     world.addBody(body);
+    player = body;
+    updateActiveTrunks(body.position);
     return body;
   };
 
-  return { world, materials, createPlayerBody };
+  // Antes de cada paso de la simulación se actualizan los troncos activos alrededor del
+  // personaje (así funciona igual desde el juego y desde las pruebas, que llaman a step()).
+  let player = null;
+  const step = world.step.bind(world);
+  world.step = (dt, timeSinceLastCalled, maxSubSteps) => {
+    if (player) updateActiveTrunks(player.position);
+    step(dt, timeSinceLastCalled, maxSubSteps);
+  };
+
+  return { world, materials, createPlayerBody, activeTrunks, updateActiveTrunks };
 }

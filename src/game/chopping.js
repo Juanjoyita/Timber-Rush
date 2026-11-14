@@ -19,7 +19,8 @@
 import * as THREE from 'three';
 import { HIDE_REASON, heightAt } from './forest.js';
 import { PLAYER_RADIUS } from './physics.js';
-import { ATTACK, CHOPPING } from '../config.js';
+import { ATTACK, BACKPACK, CHOPPING } from '../config.js';
+import { RESOURCE } from './backpack.js';
 
 export const TREE_STATE = {
   AVAILABLE: 'disponible',
@@ -73,13 +74,24 @@ class TreeGrid {
  * árbol se agrupan en una sola pieza con varias unidades, o se suman a la pieza más cercana.
  */
 export class WoodField {
-  constructor(group, geometries, models, material, maxVisible, scale) {
+  /**
+   * @param forestId Bosque al que pertenece la madera (cada bosque tendrá su precio de venta)
+   */
+  constructor(group, geometries, models, material, maxVisible, scale, forestId = 1) {
+    this.group = group;
+    this.material = material;
+    this.forestId = forestId;
     this.maxVisible = maxVisible;
     this.scale = scale;
     this.records = [];
     this.models = models;
     this.geometries = geometries;
     this.mergedUnits = 0; // Unidades sumadas a piezas existentes por el límite
+    this.collectedUnits = 0; // Unidades recogidas por el jugador (para totalWoodCollected)
+    this.flights = []; // Troncos volando hacia el personaje (solo visual)
+    this.freeFlyers = []; // Mallas temporales reutilizables para el vuelo
+    this.fullNoticeAt = -Infinity;
+    this.time = 0;
     this.meshes = models.map((name) => {
       const mesh = new THREE.InstancedMesh(geometries[name], material, maxVisible);
       mesh.count = 0;
@@ -143,6 +155,7 @@ export class WoodField {
       units,
       x: p.x, y, z: p.z,
       source: sourceTree?.name ?? null,
+      forestId: this.forestId,
       mesh,
       index: mesh.count,
       matrix: compose(p.x, y, p.z, rotY, this.scale),
@@ -169,6 +182,105 @@ export class WoodField {
     mesh.count = last;
     mesh.instanceMatrix.needsUpdate = true;
     this.records.splice(this.records.indexOf(record), 1);
+  }
+
+  /**
+   * Retira "units" unidades de una pieza. Si son todas, la pieza desaparece del suelo; si no,
+   * se queda con las restantes (recogida parcial de un montón).
+   */
+  take(record, units) {
+    const n = Math.min(units, record.units);
+    if (n >= record.units) this.remove(record);
+    else record.units -= n;
+    return n;
+  }
+
+  /** Quita toda la madera del suelo y los vuelos en curso (al cerrar sesión). */
+  clear() {
+    for (const mesh of this.meshes) {
+      mesh.count = 0;
+      mesh.userData.owners.length = 0;
+      mesh.instanceMatrix.needsUpdate = true;
+    }
+    this.records.length = 0;
+    for (const f of this.flights) {
+      f.mesh.visible = false;
+      this.freeFlyers.push(f.mesh);
+    }
+    this.flights.length = 0;
+  }
+
+  // ---------- Recolección automática (Fase 7A) ----------
+
+  /**
+   * Cada fotograma (solo jugando y sin pausa): recoge los troncos cercanos al personaje.
+   * Las unidades pasan a la mochila en el MISMO instante en que se retiran del suelo; el vuelo
+   * posterior es solo visual. Así no se puede perder ni duplicar madera aunque se pause o se
+   * salga durante la animación.
+   * @param position Posición de los pies del personaje
+   * @param backpack Mochila (backpack.js)
+   * @param onFull   Aviso de "mochila llena" (limitado a uno cada fullNoticeCooldown s)
+   * @returns unidades recogidas en este fotograma
+   */
+  collect(dt, position, backpack, onFull = null) {
+    this.time += dt;
+    this.updateFlights(dt, position);
+    const r2 = BACKPACK.pickupRadius * BACKPACK.pickupRadius;
+    let collected = 0;
+    let blocked = false;
+    // Recorrido hacia atrás: remove() quita el registro de la lista sin saltarse ninguno
+    for (let i = this.records.length - 1; i >= 0; i--) {
+      const r = this.records[i];
+      if ((r.x - position.x) ** 2 + (r.z - position.z) ** 2 > r2) continue;
+      const accepted = backpack.add(RESOURCE.WOOD, r.forestId, r.units);
+      if (accepted === 0) {
+        blocked = true; // Llena: la madera se queda en el suelo
+        continue;
+      }
+      this.startFlight(r);
+      this.take(r, accepted);
+      collected += accepted;
+    }
+    this.collectedUnits += collected;
+    if (blocked && this.time - this.fullNoticeAt >= BACKPACK.fullNoticeCooldown) {
+      this.fullNoticeAt = this.time;
+      onFull?.();
+    }
+    return collected;
+  }
+
+  /** Copia temporal del tronco que vuela hacia el personaje y se encoge. */
+  startFlight(record) {
+    let mesh = this.freeFlyers.pop();
+    if (!mesh) {
+      mesh = new THREE.Mesh(record.mesh.geometry, this.material);
+      mesh.castShadow = true;
+      mesh.name = 'madera-recogida';
+      this.group.add(mesh);
+    }
+    mesh.geometry = record.mesh.geometry;
+    record.matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    mesh.visible = true;
+    this.flights.push({ mesh, t: 0, from: mesh.position.clone(), scale: mesh.scale.x });
+  }
+
+  updateFlights(dt, target) {
+    const tx = target.x, ty = target.y + BACKPACK.pickupHeight, tz = target.z;
+    for (let i = this.flights.length - 1; i >= 0; i--) {
+      const f = this.flights[i];
+      f.t += dt;
+      const p = Math.min(1, f.t / BACKPACK.pickupDuration);
+      const e = p * p * (3 - 2 * p); // Suave al empezar y al llegar
+      // Hacia el personaje (que puede moverse), con un pequeño arco hacia arriba
+      f.mesh.position.set(f.from.x + (tx - f.from.x) * e, f.from.y + (ty - f.from.y) * e + Math.sin(Math.PI * p) * 0.35, f.from.z + (tz - f.from.z) * e);
+      f.mesh.scale.setScalar(f.scale * (1 - 0.85 * e)); // Se encoge hasta casi desaparecer
+      if (p >= 1 - 1e-6) { // Tolerancia: sumar 1/60 quince veces da 0,2499999…
+        f.mesh.visible = false;
+        this.freeFlyers.push(f.mesh);
+        this.flights[i] = this.flights[this.flights.length - 1];
+        this.flights.pop();
+      }
+    }
   }
 }
 
@@ -201,7 +313,7 @@ export class ChoppingSystem {
     }
     this.grid = new TreeGrid(forest.trees);
     this.createStumps(forestConfig.models.stumps);
-    this.wood = new WoodField(this.group, forest.geometries, forestConfig.models.logs, this.material, CHOPPING.maxVisibleLogs, CHOPPING.logScale);
+    this.wood = new WoodField(this.group, forest.geometries, forestConfig.models.logs, this.material, CHOPPING.maxVisibleLogs, CHOPPING.logScale, forestConfig.id);
   }
 
   // ---------- Tocones ----------

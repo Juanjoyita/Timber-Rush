@@ -81,6 +81,226 @@ export function showLockHint(visible) {
   $('lock-hint').classList.toggle('hidden', !visible);
 }
 
+/** Indicador de la mochila: cantidad, capacidad y barra de progreso. */
+export function renderBackpack({ total, capacity }) {
+  $('backpack-count').textContent = `${total} / ${capacity}`;
+  const percent = capacity > 0 ? Math.min(100, (total / capacity) * 100) : 0;
+  $('backpack-fill').style.width = `${percent}%`;
+  $('backpack-hud').classList.toggle('is-full', total >= capacity);
+}
+
+/** Aviso breve de "mochila llena" (se reinicia la animación en cada aviso). */
+export function flashBackpackFull() {
+  const notice = $('backpack-full');
+  notice.classList.remove('show');
+  void notice.offsetWidth; // Fuerza al navegador a reiniciar la animación CSS
+  notice.classList.add('show');
+}
+
+/**
+ * Estado del guardado de la mochila (lo envía progressSync.js).
+ * "Guardado" solo se muestra tras la confirmación de Appwrite y se oculta a los 2 s.
+ */
+let saveStatusTimer = null;
+const SAVE_TEXTS = {
+  saving: ['Guardando…', ''],
+  saved: ['✓ Guardado', 'is-ok'],
+  retrying: [null, 'is-warning'],
+  conflict: [null, 'is-error'],
+  permission: [null, 'is-error'],
+  unsupported: [null, 'is-error'],
+  condition: [null, 'is-error'],
+  blocked: [null, 'is-error'],
+  error: [null, 'is-error'],
+};
+export function showSaveStatus(status, detail) {
+  const el = $('save-status');
+  clearTimeout(saveStatusTimer);
+  const entry = SAVE_TEXTS[status];
+  if (!entry) {
+    el.textContent = ''; // Sin cambios o cambios pendientes: no hace falta mostrar nada
+    el.className = 'save-status';
+    return;
+  }
+  el.textContent = entry[0] ?? detail ?? '';
+  el.className = `save-status ${entry[1]}`.trim();
+  if (status === 'saved') saveStatusTimer = setTimeout(() => (el.textContent = ''), 2000);
+}
+
+/**
+ * Diálogo "Progreso sin guardar" al cerrar sesión. Devuelve una promesa con la elección:
+ * 'retry', 'discard' o 'cancel'.
+ */
+export function askUnsavedProgress(text) {
+  $('save-dialog-text').textContent = text;
+  $('save-dialog').classList.remove('hidden');
+  return new Promise((resolve) => {
+    const choose = (choice) => {
+      $('save-dialog').classList.add('hidden');
+      for (const [id, fn] of handlers) $(id).removeEventListener('click', fn);
+      resolve(choice);
+    };
+    const handlers = [
+      ['btn-save-retry', () => choose('retry')],
+      ['btn-save-discard', () => choose('discard')],
+      ['btn-save-cancel', () => choose('cancel')],
+    ];
+    for (const [id, fn] of handlers) $(id).addEventListener('click', fn);
+  });
+}
+
+// ---------- Monedas y venta (Fase 7B) ----------
+
+/**
+ * Número animado: muestra la transición del valor anterior al nuevo. Es SOLO visual: el saldo
+ * real lo da progressSync (confirmado en Appwrite). Siempre termina exactamente en el último
+ * valor recibido; si llega otro a mitad, continúa desde lo que se está mostrando.
+ */
+export class AnimatedCounter {
+  constructor(render, { duration = 0.9, now = () => performance.now(), raf = (f) => requestAnimationFrame(f) } = {}) {
+    this.render = render; // (valorMostrado, valorReal) => void
+    this.duration = duration * 1000;
+    this.now = now;
+    this.raf = raf;
+    this.target = 0;
+    this.shown = 0;
+    this.from = 0;
+    this.start = 0;
+    this.running = false;
+    this.tick = this.tick.bind(this);
+  }
+
+  /** Muestra el valor al instante (al cargar el perfil). */
+  set(value) {
+    this.target = value;
+    this.shown = value;
+    this.running = false;
+    this.render(value, value);
+  }
+
+  /** Anima desde lo que se ve ahora hasta "value". */
+  animateTo(value) {
+    if (value === this.target && !this.running) return;
+    this.from = this.shown;
+    this.target = value;
+    this.start = this.now();
+    if (!this.running) {
+      this.running = true;
+      this.raf(this.tick);
+    }
+  }
+
+  tick() {
+    if (!this.running) return;
+    const p = Math.min(1, (this.now() - this.start) / this.duration);
+    const eased = 1 - (1 - p) ** 3; // Rápido al principio, suave al final
+    this.shown = p >= 1 ? this.target : Math.round(this.from + (this.target - this.from) * eased);
+    this.render(this.shown, this.target);
+    if (p < 1) this.raf(this.tick);
+    else this.running = false;
+  }
+}
+
+/** Contador de monedas del juego (lo usa main.js con el saldo confirmado). */
+export const coinCounter = new AnimatedCounter((shown, real) => {
+  const el = $('coin-count');
+  el.textContent = formatNumber(shown);
+  $('coin-hud').setAttribute('aria-label', `Monedas: ${formatNumber(real)}`); // Siempre el valor real
+});
+
+/** Brillo breve del contador de monedas de la esquina al recibir monedas. */
+export function pulseCoinHud() {
+  const hud = $('coin-hud');
+  hud.classList.remove('is-earning');
+  void hud.offsetWidth; // Reinicia la animación CSS
+  hud.classList.add('is-earning');
+}
+
+/** Reinicia una animación CSS de una clase (para poder repetirla). */
+function restartClass(el, name) {
+  el.classList.remove(name);
+  void el.offsetWidth;
+  el.classList.add(name);
+}
+
+/**
+ * Anuncio grande de venta confirmada (centro de la pantalla). Solo muestra datos ya confirmados:
+ * lo controla saleSequence.js. "+N" se cuenta desde 0; el saldo se muestra con su valor exacto.
+ */
+const bannerCount = new AnimatedCounter((shown) => {
+  $('sale-banner-earned').textContent = formatNumber(shown);
+}, { duration: 0.8 });
+let bannerHideTimer = null;
+export const saleBanner = {
+  show({ earned, balance }) {
+    const el = $('sale-banner');
+    clearTimeout(bannerHideTimer);
+    el.classList.remove('hidden', 'is-leaving', 'is-shining', 'is-bumping');
+    restartClass(el, 'is-entering');
+    $('sale-banner-balance').textContent = formatNumber(balance);
+    bannerCount.set(0);
+    bannerCount.animateTo(earned);
+    pulseCoinHud();
+  },
+  /** Otra venta mientras se muestra: acumula lo ganado y actualiza el saldo. */
+  update({ earned, balance }) {
+    const el = $('sale-banner');
+    clearTimeout(bannerHideTimer);
+    el.classList.remove('hidden', 'is-leaving');
+    restartClass(el, 'is-bumping');
+    $('sale-banner-balance').textContent = formatNumber(balance);
+    bannerCount.animateTo(earned);
+    pulseCoinHud();
+  },
+  shine() {
+    restartClass($('sale-banner'), 'is-shining');
+  },
+  hide() {
+    const el = $('sale-banner');
+    el.classList.add('is-leaving');
+    clearTimeout(bannerHideTimer);
+    bannerHideTimer = setTimeout(() => el.classList.add('hidden'), 400);
+  },
+};
+
+/**
+ * Progreso hacia la mejora más barata que falta (solo información: sin botón de compra).
+ * @param next  { name, cost } o null
+ */
+export function renderUpgradeProgress(next, coins) {
+  const box = $('upgrade-progress');
+  box.classList.toggle('hidden', !next);
+  if (!next) return;
+  const ready = coins >= next.cost;
+  // Solo informativo: comprar (y subir de nivel) será una acción explícita en la tienda (Fase 8)
+  $('upgrade-label').textContent = ready
+    ? `${next.name} — ¡Ya puedes comprar esta mejora en la tienda!`
+    : `${next.name} — ${formatNumber(coins)} / ${formatNumber(next.cost)} monedas`;
+  $('upgrade-fill').style.width = `${Math.min(100, (coins / next.cost) * 100)}%`;
+  box.classList.toggle('is-ready', ready);
+}
+
+/** Aviso "F · Vender madera" sobre la plataforma. */
+export function showSellPrompt(visible) {
+  $('sell-prompt').classList.toggle('hidden', !visible);
+}
+
+/** Mensaje breve sobre la venta (por ejemplo, si no se completó). */
+let saleMessageTimer = null;
+export function showSaleMessage(text) {
+  const el = $('sale-message');
+  clearTimeout(saleMessageTimer);
+  el.textContent = text;
+  el.classList.remove('hidden');
+  saleMessageTimer = setTimeout(() => el.classList.add('hidden'), 3500);
+}
+
+/** Actualiza las monedas del menú principal tras una venta. */
+export function updateMenuCoins(coins, totalCoinsEarned) {
+  $('menu-coins').textContent = formatNumber(coins);
+  $('menu-total').textContent = formatNumber(totalCoinsEarned);
+}
+
 // ---------- Eventos ----------
 /**
  * Conecta los formularios con las funciones que recibe (handlers).

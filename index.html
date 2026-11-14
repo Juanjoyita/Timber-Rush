@@ -117,6 +117,58 @@
       <!-- Si el navegador no deja capturar el cursor: el clic sobre el juego lo vuelve a pedir -->
       <p id="lock-hint" class="game-hint hidden">Haz clic para controlar la cámara</p>
 
+      <!-- Indicadores en columna (esquina superior izquierda): no reciben clics ni tapan el centro -->
+      <div class="hud-stack">
+      <!-- Mochila (Fase 7A) -->
+      <div id="backpack-hud" class="backpack-hud" role="status" aria-label="Mochila">
+        <svg class="backpack-icon" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="4" y="11" width="22" height="10" rx="2" fill="#8a5a33" />
+          <ellipse cx="26" cy="16" rx="3.4" ry="5" fill="#e3c08d" />
+          <ellipse cx="26" cy="16" rx="1.6" ry="2.4" fill="#b88a55" />
+          <path d="M8 14h10M10 18h11" stroke="#6b4423" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+        <div class="backpack-info">
+          <span id="backpack-count" class="backpack-count">0 / 20</span>
+          <div class="backpack-bar"><div id="backpack-fill" class="backpack-fill"></div></div>
+          <!-- Estado del guardado en Appwrite (solo aparece cuando aporta información) -->
+          <span id="save-status" class="save-status" aria-live="polite"></span>
+        </div>
+        <span id="backpack-full" class="backpack-full">¡Mochila llena!</span>
+      </div>
+
+      <!-- Monedas disponibles (Fase 7B): saldo confirmado en Appwrite, con animación al vender -->
+      <div id="coin-hud" class="coin-hud" role="status" aria-label="Monedas">
+        <svg class="coin-icon" viewBox="0 0 32 32" aria-hidden="true">
+          <polygon points="16,3 26,8 29,18 23,27 9,27 3,18 6,8" fill="#e0b43a" />
+          <polygon points="16,8 22,11 24,17 20,23 12,23 8,17 10,11" fill="#f2cf5b" />
+          <path d="M14 12h4M13 16h6M14 20h4" stroke="#b88d1f" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+        <div class="coin-info">
+          <span id="coin-count" class="coin-count">0</span>
+          <!-- Progreso hacia la mejora más barata que falta (precios aprobados; compras en la Fase 8) -->
+          <div id="upgrade-progress" class="upgrade-progress hidden">
+            <span id="upgrade-label" class="upgrade-label"></span>
+            <div class="upgrade-bar"><div id="upgrade-fill" class="upgrade-fill"></div></div>
+          </div>
+        </div>
+      </div>
+      </div>
+
+      <!-- Anuncio de venta confirmada (Fase 7B): centrado, semitransparente, sin recibir el ratón -->
+      <div id="sale-banner" class="sale-banner hidden" role="status" aria-live="polite">
+        <div class="sale-card">
+          <span class="sale-sparkles" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+          <p class="sale-title">¡VENTA EXITOSA!</p>
+          <p class="sale-amount">+<span id="sale-banner-earned">0</span> <small>MONEDAS</small></p>
+          <p class="sale-subtitle">¡Tu trabajo ha dado frutos!</p>
+          <p id="sale-banner-balance-row" class="sale-balance">NUEVO SALDO: <strong id="sale-banner-balance">0</strong> MONEDAS</p>
+        </div>
+      </div>
+
+      <!-- Sobre la plataforma de venta -->
+      <p id="sell-prompt" class="game-prompt hidden"><kbd>F</kbd> Vender madera</p>
+      <p id="sale-message" class="game-toast hidden" role="alert"></p>
+
       <!-- Pausa (ESC): el cursor queda libre -->
       <div id="pause-overlay" class="pause-overlay hidden">
         <div class="panel">
@@ -129,6 +181,17 @@
     </section>
 
     <!-- Vite procesa este módulo ES6 y resuelve los imports de node_modules -->
+    <!-- Cerrar sesión con cambios sin guardar (fuera de las pantallas: no se desactiva con setBusy) -->
+    <div id="save-dialog" class="save-dialog hidden" role="alertdialog" aria-modal="true" aria-labelledby="save-dialog-title">
+      <div class="panel">
+        <h2 id="save-dialog-title" class="logo">Progreso sin guardar</h2>
+        <p id="save-dialog-text" class="muted"></p>
+        <button type="button" id="btn-save-retry" class="btn btn-primary">Reintentar guardado</button>
+        <button type="button" id="btn-save-discard" class="btn btn-secondary">Salir sin guardar</button>
+        <button type="button" id="btn-save-cancel" class="btn btn-secondary btn-small">Cancelar</button>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>
