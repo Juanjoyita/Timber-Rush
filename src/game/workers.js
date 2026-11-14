@@ -1,7 +1,8 @@
 // workers.js — Trabajadores del aserradero (Fase 9).
 //
 // - WorkerProduction: lógica temporal sencilla (sin Three.js). Cada trabajador produce una
-//   unidad de madera cada WORKERS.interval segundos; con el almacén lleno no producen.
+//   unidad de madera cada WORKERS.interval segundos en el nivel 0 del aserradero; cada nivel
+//   acelera el ritmo y entrega lotes mayores (productionStats); con el almacén lleno no producen.
 //   Solo avanza cuando el juego la actualiza: Game.js lo hace únicamente mientras se juega.
 // - WorkerCrew: los trabajadores visibles. Por cada uno contratado aparece un Worker en su puesto
 //   del cobertizo, talando sobre un tocón (la misma animación y hacha que el jugador). No recorren
@@ -11,38 +12,46 @@ import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js
 import { ATTACK, WORKERS } from '../config.js';
 import { createAxe } from './axes.js';
 import { createAxeSocket } from './Player.js';
+import { productionStats } from './economy.js';
 
 export class WorkerProduction {
   constructor(interval = WORKERS.interval) {
     this.interval = interval;
-    this.progress = 0; // Segundos-trabajador acumulados hacia la siguiente unidad
+    this.progress = 0; // Unidades acumuladas hacia el siguiente lote (fracción de madera)
+    this.batch = 1;
   }
 
   /**
    * @param workers Trabajadores contratados (0..2)
    * @param free    Espacio libre en el almacén
+   * @param level   Nivel del aserradero (0..10): ritmo y tamaño del lote
    * @returns unidades producidas en este intervalo de tiempo
+   *
+   * Cambiar de nivel a mitad de ciclo conserva el progreso acumulado (en unidades): no se
+   * pierde ni se duplica nada; solo cambia lo que falta para el siguiente lote.
    */
-  update(dt, workers, free) {
+  update(dt, workers, free, level = 0) {
+    const { rate, batch } = productionStats(level, this.interval);
+    this.batch = batch;
     if (workers <= 0) return 0;
     if (free <= 0) {
       this.progress = 0; // Almacén lleno: esperan (no acumulan producción)
       return 0;
     }
-    this.progress += dt * workers;
+    this.progress += dt * workers * rate;
     let units = 0;
-    // Tolerancia: sumar 1/60 muchas veces da 59,99999… y la unidad llegaría un fotograma tarde
-    while (this.progress >= this.interval - 1e-6 && units < free) {
-      this.progress = Math.max(0, this.progress - this.interval);
-      units++;
+    // Tolerancia: sumar 1/60 muchas veces da 0,99999… y el lote llegaría un fotograma tarde
+    while (this.progress >= batch - 1e-6 && units < free) {
+      this.progress = Math.max(0, this.progress - batch);
+      units += Math.min(batch, free - units); // Si no cabe el lote entero, se llena hasta 100 exactos
     }
-    if (units === free) this.progress = Math.min(this.progress, this.interval * 0.999);
+    if (units >= free) this.progress = Math.min(this.progress, batch * 0.999);
     return units;
   }
 
-  /** Progreso hacia la siguiente unidad (0..1). */
+  /** Progreso hacia el siguiente lote (0..1). */
   get fraction() {
-    return Math.min(1, this.progress / this.interval);
+    return Math.min(1, this.progress / this.batch);
   }
 }
 
@@ -99,8 +108,11 @@ export class WorkerCrew {
     return { model, mixer, chop, prev: chop.time, position: new THREE.Vector3(spot.x + Math.sin(spot.yaw) * 0.8, spot.y + 0.4, spot.z + Math.cos(spot.yaw) * 0.8) };
   }
 
-  /** Anima a los trabajadores visibles y avisa de cada hachazo (instante del golpe). */
-  update(dt) {
+  /**
+   * Anima a los trabajadores visibles y avisa de cada hachazo (instante del golpe).
+   * silent: en el menú se animan como decoración, sin sonido.
+   */
+  update(dt, { silent = false } = {}) {
     for (let i = 0; i < this.count; i++) {
       const w = this.workers[i];
       w.mixer.update(dt);
@@ -108,7 +120,7 @@ export class WorkerCrew {
       const hit = ATTACK.impactTime;
       const crossed = w.prev <= t ? w.prev < hit && t >= hit : w.prev < hit || t >= hit;
       w.prev = t;
-      if (crossed) this.onChop(w.position);
+      if (crossed && !silent) this.onChop(w.position);
     }
   }
 }

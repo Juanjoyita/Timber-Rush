@@ -12,6 +12,9 @@
 // - Tienda (Fase 8): B la abre (jugando y sin pausa) y B o ESC la cierran. Con la tienda abierta
 //   la simulación se congela (como en la pausa) y el cursor queda libre para hacer clic, pero no
 //   se muestra el panel de pausa. Al cerrarla se vuelve a capturar el cursor.
+// - Menú principal (Fase 10): modos menu → entering → playing → leaving → menu. Solo en
+//   "playing" (sin pausa ni tienda) la partida está activa. En el menú y en las transiciones no
+//   hay controles, ESC/B no hacen nada y perder el cursor no es una pausa.
 // No depende del renderizado: se puede probar sin navegador.
 export class PlaySession {
   /**
@@ -26,9 +29,23 @@ export class PlaySession {
     this.onLockHint = onLockHint;
     this.onShopChange = onShopChange;
     this.inShop = false;
-    this.playing = false;
+    this.mode = 'menu';
     this.paused = false;
     this.attackHeld = false;
+  }
+
+  /** Jugando (puede estar en pausa o con la tienda abierta). */
+  get playing() {
+    return this.mode === 'playing';
+  }
+
+  get inMenu() {
+    return this.mode === 'menu';
+  }
+
+  /** Cámara en transición entre el menú y la partida (sin controles). */
+  get transitioning() {
+    return this.mode === 'entering' || this.mode === 'leaving';
   }
 
   /** La simulación avanza (personaje, tala, regeneración) solo jugando y sin pausa. */
@@ -47,18 +64,44 @@ export class PlaySession {
     this.cameraRig.enabled = active;
   }
 
-  /** Botón "Jugar" (interacción del usuario): empieza y pide capturar el cursor. */
-  start() {
-    this.playing = true;
+  // ---------- Menú ↔ partida (Fase 10) ----------
+
+  /**
+   * "Continuar" (clic del usuario): empieza la entrada a la partida. Pide el cursor AHORA,
+   * dentro de la interacción (el navegador lo exige); los controles se activan al terminar la
+   * transición de cámara (finishEnter).
+   */
+  beginEnter() {
+    if (this.mode !== 'menu') return false;
+    this.mode = 'entering';
+    this.paused = false;
+    this.setActiveControls(false);
+    this.onLockHint(false);
+    this.cameraRig.requestLock();
+    return true;
+  }
+
+  /** La comprobación del progreso falló: se vuelve al menú sin haber jugado. */
+  cancelEnter() {
+    if (this.mode !== 'entering') return;
+    this.mode = 'menu';
+    this.cameraRig.releaseLock();
+  }
+
+  /** Fin de la transición: el jugador ya controla al Worker. */
+  finishEnter() {
+    if (this.mode !== 'entering') return;
+    this.mode = 'playing';
     this.paused = false;
     this.setActiveControls(true);
     this.onPauseChange(false);
-    this.cameraRig.requestLock();
+    if (!this.cameraRig.locked) this.onLockHint(true); // Sin cursor: "Haz clic para controlar la cámara"
   }
 
-  /** Volver al menú principal: libera el cursor sin pausar. */
-  stop() {
-    this.playing = false; // Primero: así la pérdida del cursor no se interpreta como pausa
+  /** Volver al menú: se detiene la partida y se libera el cursor (la cámara vuelve a la órbita). */
+  beginLeave() {
+    if (this.mode === 'menu' || this.mode === 'leaving') return false;
+    this.mode = 'leaving'; // Primero: así la pérdida del cursor no se interpreta como pausa
     if (this.inShop) {
       this.inShop = false;
       this.onShopChange(false);
@@ -68,6 +111,23 @@ export class PlaySession {
     this.onPauseChange(false);
     this.onLockHint(false);
     this.cameraRig.releaseLock();
+    return true;
+  }
+
+  finishLeave() {
+    if (this.mode === 'leaving') this.mode = 'menu';
+  }
+
+  /** Entrar directamente, sin transición (pruebas y casos sin cámara animada). */
+  start() {
+    this.beginEnter();
+    this.finishEnter();
+  }
+
+  /** Volver al menú directamente, sin transición. */
+  stop() {
+    this.beginLeave();
+    this.finishLeave();
   }
 
   pause() {

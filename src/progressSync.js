@@ -4,6 +4,12 @@
 // "progress" del usuario). No conoce el DOM ni las mecánicas de tala: recibe las funciones de la
 // API (appwrite.js) y avisa de su estado con onStatus(estado, detalle).
 //
+// Nueva partida (Fase 10): resetProgress() es otra operación de la misma maquinaria: una sola
+// escritura condicional y atómica que deja TODAS las columnas de progreso con sus valores
+// iniciales (saveVersion sigue subiendo). Antes se resuelve cualquier guardado incierto y, al
+// confirmarse, se descartan los cambios locales de la partida anterior. Una pestaña con la
+// partida antigua no puede sobrescribirla (su versión ya no coincide).
+//
 // Almacén (Fase 9): resources.storage recibe la madera de los trabajadores (capacidad
 // storageCapacity). Esa producción se guarda de forma diferida (como mucho cada productionDelay
 // ms): un cierre brusco puede perder unos segundos de producción, pero nunca madera ya guardada.
@@ -65,6 +71,8 @@ export const SYNC_SETTINGS = {
 };
 
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
+/** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
+export const INITIAL_PROGRESS = { resources: { backpack: {}, storage: {} } };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const isCount = (x) => Number.isInteger(x) && x >= 0;
 /** Contenido { recurso: { idBosque: n } } con solo enteros positivos (o vacío). */
@@ -117,6 +125,8 @@ export class ProgressSync {
     this.onSaleFailed = () => {}; // (venta, motivo) => void
     this.onPurchase = () => {}; // (compra confirmada) => void — una sola vez por compra
     this.onPurchaseFailed = () => {}; // (compra, motivo) => void (solo resultados diferidos)
+    this.onReset = () => {}; // () => void — nueva partida confirmada (una sola vez)
+    this.onResetFailed = () => {}; // (motivo) => void (solo resultados diferidos)
     this.saleSeq = 0; // Identificador de cada operación (no se reinicia al cambiar de cuenta)
     this.reset();
   }
@@ -143,6 +153,7 @@ export class ProgressSync {
     this.coins = 0; // Monedas disponibles CONFIRMADAS en Appwrite (fuente de verdad local)
     this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
     this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
+    this.forests = { currentForest: 1, unlockedForests: 1 }; // Solo lectura (bosques: Fase 11)
     this.opInFlight = false; // Venta o compra en curso (nunca dos a la vez)
     this.lazyOnly = false; // Lo único pendiente es producción (guardado diferido)
     this.status = SAVE_STATUS.IDLE;
@@ -213,6 +224,7 @@ export class ProgressSync {
       workers: profile.workers ?? 0,
       sawmillLevel: profile.sawmillLevel ?? 0,
     };
+    this.forests = { currentForest: profile.currentForest ?? 1, unlockedForests: profile.unlockedForests ?? 1 };
     this.confirmed = { resources: profile.resources ?? null, totalWoodCollected: profile.totalWoodCollected ?? null };
     this.onStorageChange(this.storageTotal);
     if (damaged) {
@@ -386,6 +398,97 @@ export class ProgressSync {
     return this.runOperation('purchase', key);
   }
 
+  // ---------- Nueva partida (Fase 10) ----------
+
+  /**
+   * Reinicia TODO el progreso de la partida en una escritura condicional y atómica.
+   * Solo debe llamarse tras la confirmación explícita del jugador (escribir REINICIAR).
+   * @returns { ok } si se confirmó; { ok: false, reason | pending } si no (nada cambia)
+   */
+  resetProgress() {
+    return this.runOperation('reset');
+  }
+
+  /** Datos iniciales de la partida (identidad y saveVersion no se tocan). */
+  planReset() {
+    const data = {
+      resources: JSON.stringify(INITIAL_PROGRESS.resources),
+      totalWoodCollected: 0,
+      coins: 0,
+      totalCoinsEarned: 0,
+      axeLevel: 1,
+      backpackLevel: 1,
+      sawmillLevel: 0,
+      workers: 0,
+      currentForest: 1,
+      unlockedForests: 1,
+    };
+    return { data, op: { kind: 'reset', id: ++this.saleSeq, done: false } };
+  }
+
+  /** Nueva partida confirmada: estado local inicial y se descarta lo pendiente de la anterior. */
+  applyReset(data) {
+    this.coins = 0;
+    this.totalCoinsEarned = 0;
+    this.totalWood = 0;
+    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
+    this.forests = { currentForest: 1, unlockedForests: 1 };
+    this.base = JSON.parse(data.resources);
+    this.restoring = true; // No son cambios pendientes: ya están guardados
+    this.backpack.clear();
+    this.backpack.setLevel(1);
+    this.restoring = false;
+    this.dirty = false;
+    this.dirtySince = null;
+    this.lazyOnly = false;
+    this.onStorageChange(this.storageTotal);
+    this.onReset();
+  }
+
+  // ---------- Continuar (Fase 10) ----------
+
+  /**
+   * Antes de entrar a jugar: guarda lo pendiente y comprueba la fila en Appwrite. Si otra
+   * sesión la cambió (otra pestaña o dispositivo), se restaura desde ahí.
+   * @returns { ok, reloaded } · { ok: false, reason } si no se pudo comprobar
+   */
+  async refreshFromServer() {
+    if (!this.attached) return { ok: false, reason: 'sin-sesión' };
+    const flushed = await this.flush();
+    if (!flushed.ok && !this.halted) return { ok: false, reason: flushed.status };
+    const userId = this.userId;
+    let row;
+    try {
+      row = await this.api.getProfile(userId);
+    } catch (error) {
+      return { ok: false, reason: this.api.classify(error) };
+    }
+    if (this.userId !== userId) return { ok: false, reason: 'sin-sesión' };
+    if (!row) return { ok: false, reason: 'sin-fila' };
+    if (row.saveVersion === this.version || this.halted) return { ok: true, reloaded: false };
+    // Otra sesión guardó: se restaura todo desde Appwrite (aquí no queda nada pendiente)
+    const backpack = this.backpack;
+    this.attach(userId, row, backpack);
+    return { ok: true, reloaded: true };
+  }
+
+  // ---------- Estadísticas (Fase 10) ----------
+
+  /** Datos confirmados para el panel de estadísticas (sin inventar nada que no se guarde). */
+  stats() {
+    return {
+      totalWoodCollected: this.totalWood,
+      totalCoinsEarned: this.totalCoinsEarned,
+      coins: this.coins,
+      ...this.levels,
+      backpack: this.backpack ? this.backpack.total : 0,
+      backpackCapacity: this.backpack ? this.backpack.capacity : 0,
+      storage: this.storageTotal,
+      storageCapacity: this.storageCapacity,
+      ...this.forests,
+    };
+  }
+
   /** Venta o compra: una a la vez, esperando a que termine cualquier guardado en curso. */
   async runOperation(mode, arg) {
     if (!this.attached) return { ok: false, reason: 'sin-sesión' };
@@ -455,6 +558,10 @@ export class ProgressSync {
   applySale(op, data) {
     if (op.done) return;
     op.done = true;
+    if (op.kind === 'reset') {
+      this.applyReset(data);
+      return;
+    }
     if (op.kind === 'purchase') {
       this.applyPurchase(op, data);
       return;
@@ -480,7 +587,8 @@ export class ProgressSync {
     if (!op || op.done) return;
     op.done = true;
     if (!deferred) return;
-    if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
+    if (op.kind === 'reset') this.onResetFailed(reason);
+    else if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
     else this.onSaleFailed({ id: op.id, reason });
   }
 
@@ -537,6 +645,8 @@ export class ProgressSync {
           return { ok: false, reason: 'vacía', status: this.status };
         }
         ({ data: snapshot, sale } = plan);
+      } else if (mode === 'reset') {
+        ({ data: snapshot, op: sale } = this.planReset());
       } else if (mode === 'purchase') {
         const plan = this.planPurchase(arg);
         if (plan.error) {
@@ -556,7 +666,7 @@ export class ProgressSync {
       this.dirty = false;
       this.dirtySince = null;
       this.lazyOnly = false;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? (sale.kind === 'purchase' ? 'Comprando…' : 'Vendiendo…') : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…' }[sale.kind]) : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);
@@ -589,7 +699,7 @@ export class ProgressSync {
       this.confirmed = pickSaved(snapshot);
       if (sale) {
         this.applySale(sale, snapshot);
-        const info = sale.kind === 'purchase' ? { purchase: { id: sale.id, key: sale.key, level: sale.level } } : { sale: { id: sale.id, earned: sale.earned } };
+        const info = sale.kind === 'purchase' ? { purchase: { id: sale.id, key: sale.key, level: sale.level } } : sale.kind === 'reset' ? { reset: true } : { sale: { id: sale.id, earned: sale.earned } };
         return { ...this.confirmSaved(), ok: true, ...info };
       }
       return this.confirmSaved();

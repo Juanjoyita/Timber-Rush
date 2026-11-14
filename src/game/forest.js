@@ -14,6 +14,7 @@
 // - Terreno en dos mallas: detallada cerca y muy simple a lo lejos.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { allFootprints, MAX_SAWMILL_LEVEL, stageColliders } from './sawmillStages.js';
 
 const MODEL_PATH = '/assets/models/';
 
@@ -41,6 +42,17 @@ export const SAWMILL_AREAS = {
     { minX: SM.x + 5.1, maxX: SM.x + 8.9, minZ: SM.z - 3.4, maxZ: SM.z + 0.4 },
   ],
 };
+
+// Evolución del aserradero: huellas de TODAS las piezas de las etapas (nivel 10). El bosque se
+// despeja alrededor de ellas desde el principio (así nunca aparece un edificio dentro de un
+// árbol al comprar un nivel) y el terreno se aplana bajo todas.
+export const SAWMILL_STAGE_FOOTPRINTS = allFootprints(SM);
+const unionRect = (rects) => ({
+  minX: Math.min(...rects.map((r) => r.minX)), maxX: Math.max(...rects.map((r) => r.maxX)),
+  minZ: Math.min(...rects.map((r) => r.minZ)), maxZ: Math.max(...rects.map((r) => r.maxZ)),
+});
+// Rectángulo que envuelve el recinto actual y todas las etapas (zona plana)
+export const SAWMILL_EXPANSION = unionRect([SAWMILL_AREAS.compound, ...SAWMILL_STAGE_FOOTPRINTS]);
 
 /** Tipo de suelo bajo un punto: 'wood' sobre el cobertizo o la plataforma, 'grass' en el resto. */
 export function surfaceAt(x, z) {
@@ -128,7 +140,7 @@ export function heightAt(x, z) {
     0.15 * Math.cos((x - z) * 0.11);
   // Aplanado progresivo: 0 dentro de los claros, ondulación completa a pocos metros
   const flat = Math.min(
-    smoothstep(3, 10, distanceToRect(x, z, SAWMILL_AREAS.compound)),
+    smoothstep(3, 10, distanceToRect(x, z, SAWMILL_EXPANSION)),
     smoothstep(3, 9, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z))
   );
   h *= flat;
@@ -497,12 +509,20 @@ function createSawmill(geometries, logNames, mats) {
   box('light', 0.25, 1.4, 5.6, -3.9, 0.85, 0, solid); // Murete trasero (el resto queda abierto)
 
   // --- Zona de procesado: mesa con disco de sierra y un tronco preparado ---
-  box('light', 1.4, 0.9, 3.4, 0.8, 0.6, 0, solid);
+  // Es la mesa provisional: desde el nivel 4 del aserradero la sustituye la sierra circular del
+  // paquete (sawmillStages.js oculta este grupo; la colisión es la misma).
+  const legacyTable = new THREE.Group();
+  legacyTable.name = 'mesa-provisional';
+  const tableTop = mesh(boxGeo, mats.woodLight, { cast: true, receive: true });
+  tableTop.scale.set(1.4, 0.9, 3.4);
+  tableTop.position.set(0.8, 0.6, 0);
+  addCollider(1.4, 0.9, 3.4, 0.8, 0.6, 0);
   const blade = mesh(new THREE.CylinderGeometry(0.75, 0.75, 0.06, 14).rotateZ(Math.PI / 2), mats.metal);
   blade.position.set(0.8, 1.15, -0.7);
   const tableLog = mesh(geometries[logNames[1]], mats.nature);
   tableLog.position.set(0.8, 1.05, 0.8);
-  group.add(blade, tableLog);
+  legacyTable.add(tableTop, blade, tableLog);
+  group.add(legacyTable);
 
   // --- Almacén delimitado por una valla (entrada libre en el lado +X, de z=4 a z=6.3) ---
   const fencePost = (x, z) => box('dark', 0.18, 1.1, 0.18, x, 0.55, z, solid);
@@ -594,7 +614,7 @@ function createSawmill(geometries, logNames, mats) {
   // Obstáculos para la cámara: las piezas sólidas + el volumen del tejado
   const cameraBoxes = [...colliders, { x: SM.x, y: 4.3, z: SM.z, hx: 4.4, hy: 1.0, hz: 3.2 }];
 
-  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes, workerSpots };
+  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes, workerSpots, legacyTable };
 }
 
 // ---------- Zonas reservadas ----------
@@ -626,6 +646,21 @@ const MARGINS = {
   bush: { path: 0.9, camp: 3.5, spawn: 3.5, clearing: 0.5 },
   plant: { path: 0.15, camp: 1, spawn: 1.5, clearing: 0 },
 };
+
+// Distancia libre alrededor de cada pieza de las etapas del aserradero (además de su radio)
+const STAGE_CLEARANCE = { tree: 2.5, rock: 1, bush: 1.2, plant: 0.4 };
+
+/**
+ * ¿Cae en el claro de las etapas del aserradero? Se comprueba DESPUÉS de colocar cada objeto
+ * (con todos sus números aleatorios ya tomados) y el objeto sigue ocupando su sitio en las
+ * rejillas: así el resto del bosque queda exactamente igual que antes; solo desaparece lo
+ * que estaba junto a las nuevas construcciones.
+ */
+export function inStageClearing(x, z, radius, kind) {
+  const margin = STAGE_CLEARANCE[kind] + radius;
+  if (distanceToRect(x, z, SAWMILL_EXPANSION) >= margin) return false;
+  return SAWMILL_STAGE_FOOTPRINTS.some((f) => distanceToRect(x, z, f) < margin);
+}
 
 function isReserved(x, z, radius, kind, clearings) {
   const m = MARGINS[kind];
@@ -835,9 +870,10 @@ export function createForest(config, geometries) {
   // y solo si respeta la distancia mínima. Resultado: arboledas densas, zonas abiertas
   // y nunca una cuadrícula.
   const trees = [];
+  let treesPlaced = 0; // Incluye los que caen en el claro de las etapas (ver inStageClearing)
   const talableMatrices = new Map([...pineModels, ...roundModels].map((n) => [n, []]));
   const half = config.treeSpacing / 2;
-  for (let attempt = 0; trees.length < config.treeCount && attempt < 100000; attempt++) {
+  for (let attempt = 0; treesPlaced < config.treeCount && attempt < 100000; attempt++) {
     const x = range(rand, -H + 2, H - 2);
     const z = range(rand, -H + 2, H - 2);
     if (rand() > density(x, z)) continue;
@@ -855,6 +891,10 @@ export function createForest(config, geometries) {
     // Cada árbol es un registro de datos + una instancia del InstancedMesh de su modelo
     const y = heightAt(x, z) - 0.05; // Base apoyada (ligeramente enterrada)
     const rotationY = rand() * Math.PI * 2;
+    treesPlaced++;
+    spacing.add(x, z, half);
+    obstacles.add(x, z, radius);
+    if (inStageClearing(x, z, radius, 'tree')) continue; // Junto a las construcciones del aserradero
     const matrix = makeMatrix(x, y, z, rotationY, width, height, width);
     const tree = {
       name: `arbol-${trees.length}`,
@@ -871,15 +911,13 @@ export function createForest(config, geometries) {
     };
     talableMatrices.get(modelName).push(matrix);
     tree.instance.index = talableMatrices.get(modelName).length - 1;
-
-    spacing.add(x, z, half);
-    obstacles.add(x, z, radius);
     trees.push(tree);
   }
 
   // --- Rocas: mallas individuales (colisión en la Fase 5) ---
   const rocks = [];
-  for (let attempt = 0; rocks.length < config.rockCount && attempt < 5000; attempt++) {
+  let rocksPlaced = 0;
+  for (let attempt = 0; rocksPlaced < config.rockCount && attempt < 5000; attempt++) {
     const x = range(rand, -H + 3, H - 3);
     const z = range(rand, -H + 3, H - 3);
     const modelName = pick(rand, models.rocks);
@@ -887,15 +925,18 @@ export function createForest(config, geometries) {
     const scale = range(rand, 0.7, 1.1);
     const radius = Math.max(-bb.min.x, bb.max.x, -bb.min.z, bb.max.z) * scale;
     if (isReserved(x, z, radius, 'rock', clearings) || !spacing.isFree(x, z, radius, 0.8)) continue;
+    rocksPlaced++;
+    spacing.add(x, z, radius);
+    obstacles.add(x, z, radius);
+    const rotationY = rand() * Math.PI * 2;
+    if (inStageClearing(x, z, radius, 'rock')) continue;
 
     const rock = mesh(geometries[modelName], mats.nature, { cast: true, receive: true });
     rock.name = `roca-${rocks.length}`;
     rock.position.set(x, heightAt(x, z) - 0.1, z);
-    rock.rotation.y = rand() * Math.PI * 2;
+    rock.rotation.y = rotationY;
     rock.scale.setScalar(scale);
     rock.userData = { model: modelName, radius, height: bb.max.y * scale };
-    spacing.add(x, z, radius);
-    obstacles.add(x, z, radius);
     rocks.push(rock);
     group.add(rock);
   }
@@ -907,7 +948,8 @@ export function createForest(config, geometries) {
   const logRand = createRandom(config.seed + 2);
   const logMatrices = new Map(models.logs.map((n) => [n, []]));
   const decorColliders = [];
-  for (let attempt = 0; decorColliders.length < config.fallenLogCount && attempt < 20000; attempt++) {
+  let logsPlaced = 0;
+  for (let attempt = 0; logsPlaced < config.fallenLogCount && attempt < 20000; attempt++) {
     const x = range(logRand, -H + 4, H - 4);
     const z = range(logRand, -H + 4, H - 4);
     const name = pick(logRand, models.logs);
@@ -918,6 +960,10 @@ export function createForest(config, geometries) {
     if (isReserved(x, z, along / 2, 'rock', clearings) || !spacing.isFree(x, z, along / 2, 0.6)) continue;
 
     const yaw = logRand() * Math.PI * 2;
+    logsPlaced++;
+    spacing.add(x, z, along / 2);
+    obstacles.add(x, z, along / 2);
+    if (inStageClearing(x, z, along / 2, 'rock')) continue;
     const y = heightAt(x, z) - 0.05;
     const height = bb.max.y * scale;
     logMatrices.get(name).push(makeMatrix(x, y, z, yaw, scale));
@@ -928,8 +974,6 @@ export function createForest(config, geometries) {
       hy: height / 2,
       hz: alongX ? 0.3 * scale : along / 2,
     });
-    spacing.add(x, z, along / 2);
-    obstacles.add(x, z, along / 2);
   }
   group.add(...instancedByModel(logMatrices, geometries, mats.nature, { cast: true, receive: true }));
 
@@ -937,7 +981,8 @@ export function createForest(config, geometries) {
   // Con un bosque tan denso, algún árbol puede quedar encerrado entre otros, rocas o troncos
   // caídos. Se calcula a dónde se puede llegar caminando desde el inicio y se quitan los árboles
   // sin ningún punto alcanzable cerca del tronco (nunca habría un árbol imposible de talar).
-  const canReach = createWalkability({ trees, rocks, decorColliders, boxes: sawmill.colliders });
+  // Cuenta con todas las construcciones futuras del aserradero (nivel máximo)
+  const canReach = createWalkability({ trees, rocks, decorColliders, boxes: [...sawmill.colliders, ...stageColliders(MAX_SAWMILL_LEVEL, SM)] });
   const reachableTrees = trees.filter((t) => isChoppable(t, canReach));
   trees.length = 0;
   trees.push(...reachableTrees);
@@ -993,7 +1038,8 @@ export function createForest(config, geometries) {
   // --- Arbustos: InstancedMesh con sombra (son voluminosos); preferentemente en los bordes de las arboledas ---
   const bushMatrices = new Map(models.bushes.map((n) => [n, []]));
   const bushes = [];
-  for (let attempt = 0; bushes.length < config.bushCount && attempt < 20000; attempt++) {
+  let bushesPlaced = 0;
+  for (let attempt = 0; bushesPlaced < config.bushCount && attempt < 20000; attempt++) {
     const x = range(decoRand, -H + 2, H - 2);
     const z = range(decoRand, -H + 2, H - 2);
     const d = density(x, z);
@@ -1001,8 +1047,12 @@ export function createForest(config, geometries) {
     const scale = range(decoRand, 0.55, 0.9);
     const r = 1.1 * scale;
     if (isReserved(x, z, r, 'bush', clearings) || !obstacles.isFree(x, z, r, 0.6)) continue;
-    bushMatrices.get(pick(decoRand, models.bushes)).push(makeMatrix(x, heightAt(x, z) - 0.05, z, decoRand() * Math.PI * 2, scale));
+    const bushModel = pick(decoRand, models.bushes);
+    const bushMatrix = makeMatrix(x, heightAt(x, z) - 0.05, z, decoRand() * Math.PI * 2, scale);
+    bushesPlaced++;
     obstacles.add(x, z, r);
+    if (inStageClearing(x, z, r, 'bush')) continue;
+    bushMatrices.get(bushModel).push(bushMatrix);
     bushes.push({ x, z, r });
   }
   group.add(...instancedByModel(bushMatrices, geometries, mats.nature, { cast: true, receive: true }));
@@ -1023,8 +1073,9 @@ export function createForest(config, geometries) {
       if (isReserved(x, z, 0.2, 'plant', clearings) || !obstacles.isFree(x, z, 0.2, 0.15)) continue;
       const isFlower = decoRand() < 0.2 + openness * 0.4;
       const name = pick(decoRand, isFlower ? models.flowers : models.grass);
-      plants.get(name).push(makeMatrix(x, heightAt(x, z) - 0.03, z, decoRand() * Math.PI * 2, range(decoRand, 0.8, 1.3)));
+      const plantMatrix = makeMatrix(x, heightAt(x, z) - 0.03, z, decoRand() * Math.PI * 2, range(decoRand, 0.8, 1.3));
       placed++;
+      if (!inStageClearing(x, z, 0.2, 'plant')) plants.get(name).push(plantMatrix); // Nada asoma por los suelos
     }
   }
   group.add(...instancedByModel(plants, geometries, mats.nature, { cast: false, receive: true }));
@@ -1047,6 +1098,7 @@ export function createForest(config, geometries) {
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
     workerSpots: sawmill.workerSpots, // Puestos de los trabajadores del aserradero (Fase 9)
+    sawmillLegacyTable: sawmill.legacyTable, // Mesa provisional (la sustituye la sierra del nivel 4)
     geometries, // Geometrías compartidas (la tala las reutiliza para tocones, caídas y troncos)
   };
 }

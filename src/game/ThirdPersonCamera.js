@@ -55,6 +55,7 @@ export class ThirdPersonCamera {
     this.pivot = new THREE.Vector3();
     this.initialized = false;
     this.enabled = false; // Solo acepta ratón y rueda mientras se juega
+    this.sensitivityScale = 1; // Configuración (Fase 10): multiplica la sensibilidad del ratón
 
     this.locked = false;
     this.onLockChange = null; // (bloqueado) => void
@@ -100,9 +101,10 @@ export class ThirdPersonCamera {
   onMouseMove(event) {
     if (!this.locked || !this.enabled) return; // El ratón solo mueve la cámara con el cursor capturado
     const s = this.s;
-    this.target.theta -= event.movementX * s.sensitivity;
+    const k = s.sensitivity * this.sensitivityScale;
+    this.target.theta -= event.movementX * k;
     // Ratón hacia arriba → la cámara baja y mira hacia arriba
-    this.target.phi = THREE.MathUtils.clamp(this.target.phi - event.movementY * s.sensitivity, s.minPolar, s.maxPolar);
+    this.target.phi = THREE.MathUtils.clamp(this.target.phi - event.movementY * k, s.minPolar, s.maxPolar);
   }
 
   onWheel(event) {
@@ -119,6 +121,40 @@ export class ThirdPersonCamera {
     this.desiredPivot.set(focus.x, focus.y + this.s.pivotHeight, focus.z);
     this.pivot.copy(this.desiredPivot);
     this.initialized = true;
+  }
+
+  // ---------- Transiciones del menú (Fase 10) ----------
+
+  /**
+   * Pose que tendrá la cámara detrás del personaje (con obstáculos y terreno), sin suavizado.
+   * Es el destino de la transición desde el menú.
+   */
+  targetPose(focus, out = { position: new THREE.Vector3(), target: new THREE.Vector3() }) {
+    const s = this.s;
+    out.target.set(focus.x, focus.y + s.pivotHeight, focus.z);
+    this.direction.setFromSphericalCoords(1, this.target.phi, this.target.theta);
+    let distance = this.target.radius;
+    if (this.obstacles) {
+      const hit = this.obstacles.raycast(out.target, this.direction, distance + s.collisionMargin);
+      if (hit < Infinity) distance = Math.max(s.minCollisionDistance, Math.min(distance, hit - s.collisionMargin));
+    }
+    out.position.copy(out.target).addScaledVector(this.direction, distance);
+    const minY = this.heightAt(out.position.x, out.position.z) + s.groundClearance;
+    if (out.position.y < minY) out.position.y = minY;
+    out.distance = distance;
+    return out;
+  }
+
+  /** Deja la cámara exactamente en su pose de juego (al terminar la transición: sin saltos). */
+  snapTo(focus) {
+    const pose = this.targetPose(focus);
+    this.pivot.copy(pose.target);
+    this.desiredPivot.copy(pose.target);
+    this.current.copy(this.target);
+    this.collisionDistance = pose.distance;
+    this.initialized = true;
+    this.camera.position.copy(pose.position);
+    this.camera.lookAt(this.pivot);
   }
 
   // ---------- Actualización (cada fotograma) ----------

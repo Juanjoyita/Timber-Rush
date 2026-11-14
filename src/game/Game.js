@@ -5,11 +5,15 @@
 // FASE 7A: recolección automática de la madera del suelo y mochila.
 // FASE 7B: venta con F en la plataforma del aserradero y celebración (solo tras confirmarla).
 // FASE 9: trabajadores del aserradero: producen madera en el almacén mientras se juega.
+// EVOLUCIÓN DEL ASERRADERO: cinco etapas visuales según el nivel comprado (sawmillStages.js) y
+//          producción de los trabajadores según ese nivel (ritmo y lotes).
+// FASE 10: menú principal cinematográfico (órbita sobre el bosque) y transiciones con la
+//          cámara en tercera persona. En el menú NO se simula nada del gameplay.
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
 import { FORESTS, SALE } from '../config.js';
 import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, surfaceAt, WORLD } from './forest.js';
-import { createPhysics, FIXED_STEP } from './physics.js';
+import { createPhysics, FIXED_STEP, PLAYER_RADIUS } from './physics.js';
 import { Player } from './Player.js';
 import { ChoppingSystem } from './chopping.js';
 import { AudioManager } from './audio.js';
@@ -18,6 +22,8 @@ import { PlaySession } from './session.js';
 import { Backpack } from './backpack.js';
 import { SaleCelebration } from './saleEffects.js';
 import { WorkerCrew, WorkerProduction } from './workers.js';
+import { MenuCamera } from './menuCamera.js';
+import { clampLevel, loadSawmillModels, SawmillStages } from './sawmillStages.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -60,6 +66,9 @@ export class Game {
 
     // ---------- Cámara en tercera persona (ratón con Pointer Lock + rueda) ----------
     this.cameraRig = new ThirdPersonCamera(this.camera, this.renderer.domElement, { heightAt });
+    // Cámara del menú principal: órbita alrededor del aserradero (Fase 10)
+    this.menuCamera = new MenuCamera(this.camera, WORLD.sawmill);
+    this.enterPose = { position: new THREE.Vector3(), target: new THREE.Vector3() }; // Reutilizable
 
     this.createLights();
 
@@ -84,6 +93,8 @@ export class Game {
     // recibe lo producido con onWorkersProduce(unidades). Solo producen jugando (sin pausa).
     this.production = new WorkerProduction();
     this.workerCount = 0;
+    this.sawmillLevel = 0; // Nivel CONFIRMADO del aserradero (main.js lo fija con setSawmillLevel)
+    this.sawmillStages = null; // Construcciones de cada etapa (se crean al cargar los modelos)
     this.storageFree = () => 0;
     this.onWorkersProduce = () => {};
     this.crew = null; // Se crea cuando el modelo del Worker está cargado
@@ -172,7 +183,7 @@ export class Game {
    * bordes de las sombras "tiemblen", y solo se recalcula si el punto cambia.
    */
   updateShadowArea(point) {
-    const texel = (SHADOW_HALF * 2) / SHADOW_MAP;
+    const texel = (SHADOW_HALF * 2) / this.sun.shadow.mapSize.x;
     const x = Math.round(point.x / texel) * texel;
     const z = Math.round(point.z / texel) * texel;
     if (x === this.shadowCenter.x && z === this.shadowCenter.y) return;
@@ -183,7 +194,7 @@ export class Game {
   }
 
   async load(forestConfig) {
-    const [geometries] = await Promise.all([loadForestModels(forestConfig), this.player.load()]);
+    const [geometries, sawmillGeometries] = await Promise.all([loadForestModels(forestConfig), loadSawmillModels(), this.player.load()]);
     this.player.equipAxe(this.axeLevel ?? 1); // Por si el perfil se cargó antes que el modelo
     this.forest = createForest(forestConfig, geometries);
     this.scene.add(this.forest.group);
@@ -195,6 +206,19 @@ export class Game {
     const sell = SAWMILL_AREAS.sellZone;
     const yaw = Math.atan2((sell.minX + sell.maxX) / 2 - x, (sell.minZ + sell.maxZ) / 2 - z);
     this.player.attachBody(this.physics.createPlayerBody(x, z), yaw);
+
+    // Aserradero según su nivel: construcciones, colisiones y obstáculos de la cámara
+    this.sawmillStages = new SawmillStages({
+      geometries: sawmillGeometries,
+      origin: WORLD.sawmill,
+      material: this.forest.materials.nature,
+      legacyTable: this.forest.sawmillLegacyTable,
+      physics: this.physics,
+      cameraBoxes: this.forest.cameraBoxes,
+    });
+    this.sawmillStages.setLevel(this.sawmillLevel); // Por si el perfil se cargó antes que los modelos
+    this.scene.add(this.sawmillStages.group);
+    this.spawnYaw = yaw; // Para volver al inicio en una partida nueva
 
     // Ataque y tala separados: el personaje golpea (haya o no un árbol) y avisa de cada impacto;
     // el sistema de tala comprueba si alcanza a un árbol (alcance + arco frontal) y le aplica
@@ -228,13 +252,79 @@ export class Game {
     }, 1000);
   }
 
+  // ---------- Menú ↔ partida (Fase 10) ----------
+
   /**
-   * Entrar a jugar (llamar desde el clic en "Jugar": el navegador exige una interacción para
-   * capturar el cursor) o volver al menú (libera el cursor).
+   * "Continuar": empieza la entrada. Llamar DENTRO del clic (pide el cursor ahora). La cámara
+   * sigue en el menú hasta que se llame a startEnterTransition (tras comprobar el progreso).
    */
-  setPlaying(playing) {
-    if (playing) this.session.start();
-    else this.session.stop();
+  beginEnter() {
+    return this.session.beginEnter();
+  }
+
+  /** La comprobación del progreso falló: se queda en el menú. */
+  cancelEnter() {
+    this.session.cancelEnter();
+  }
+
+  /** Transición de la órbita a la cámara en tercera persona; al terminar, control del Worker. */
+  startEnterTransition(onDone = () => {}) {
+    this.cameraRig.placeBehind(this.player.position, this.player.yaw);
+    this.menuCamera.startTransition(
+      () => this.cameraRig.targetPose(this.player.position, this.enterPose),
+      () => {
+        this.cameraRig.snapTo(this.player.position); // Sin salto en el primer fotograma de juego
+        this.session.finishEnter();
+        onDone();
+      }
+    );
+  }
+
+  /** Volver al menú: se detiene la partida, se libera el cursor y la cámara vuelve a la órbita. */
+  leaveToMenu(onDone = () => {}) {
+    if (!this.session.beginLeave()) return false;
+    this.menuCamera.returnToOrbit(this.cameraRig.pivot, () => {
+      this.session.finishLeave();
+      onDone();
+    });
+    return true;
+  }
+
+  /**
+   * Mundo como al empezar (nueva partida o cambio de cuenta): bosque intacto, sin madera en el
+   * suelo y el Worker en el punto de inicio. No toca Appwrite.
+   */
+  resetWorld() {
+    this.chopping?.resetAll();
+    this.production = new WorkerProduction();
+    if (this.player.body) {
+      const { x, z } = WORLD.spawn;
+      const body = this.player.body;
+      body.position.set(x, heightAt(x, z) + PLAYER_RADIUS + 0.02, z);
+      body.velocity.set(0, 0, 0);
+      body.previousPosition.copy(body.position);
+      body.interpolatedPosition.copy(body.position);
+      this.player.yaw = this.spawnYaw ?? 0;
+      this.player.syncVisual(0);
+      this.cameraRig.placeBehind(this.player.position, this.player.yaw);
+    }
+  }
+
+  /** Configuración del navegador (settings.js): audio, ratón y calidad gráfica. */
+  applySettings({ masterVolume, effectsVolume, sensitivity, quality }) {
+    this.audio.setMasterVolume(masterVolume);
+    this.audio.setEffectsVolume(effectsVolume);
+    this.cameraRig.sensitivityScale = sensitivity;
+    // Calidad: resolución (pixelRatio) y tamaño del mapa de sombras. Sin objetos nuevos.
+    const ratio = quality === 'low' ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+    if (this.renderer.getPixelRatio() !== ratio) this.renderer.setPixelRatio(ratio);
+    const size = quality === 'low' ? SHADOW_MAP / 2 : SHADOW_MAP;
+    if (this.sun.shadow.mapSize.x !== size) {
+      this.sun.shadow.mapSize.set(size, size);
+      this.sun.shadow.map?.dispose(); // Se vuelve a crear con el tamaño nuevo
+      this.sun.shadow.map = null;
+      this.shadowCenter.set(Infinity, Infinity);
+    }
   }
 
   /** Hacha del nivel guardado o recién comprado (1..3): cambia el modelo y el daño. */
@@ -247,6 +337,16 @@ export class Game {
   setWorkerCount(n) {
     this.workerCount = Math.max(0, Math.min(2, Math.floor(n) || 0));
     this.crew?.setCount(this.workerCount);
+  }
+
+  /**
+   * Nivel del aserradero CONFIRMADO por Appwrite (al cargar el progreso o tras una compra):
+   * muestra sus construcciones y ajusta el ritmo de los trabajadores. El progreso del ciclo en
+   * curso se conserva (no se pierde ni se duplica madera).
+   */
+  setSawmillLevel(level) {
+    this.sawmillLevel = clampLevel(level);
+    this.sawmillStages?.setLevel(this.sawmillLevel);
   }
 
   /** Pila de troncos del almacén según lo almacenado (0..1). */
@@ -288,9 +388,9 @@ export class Game {
    */
   resetPlayerData() {
     this.backpack.clear();
-    this.chopping?.wood.clear();
+    this.resetWorld(); // Bosque, madera del suelo y posición: nada de la cuenta anterior
     this.setWorkerCount(0);
-    this.production = new WorkerProduction();
+    this.setSawmillLevel(0);
   }
 
   /** Botón "Cerrar" de la tienda (Fase 8). */
@@ -326,37 +426,59 @@ export class Game {
   loop() {
     requestAnimationFrame(this.loop);
     const dt = Math.min(this.clock.getDelta(), MAX_DELTA);
+    this.tick(dt);
+    this.renderer.render(this.scene, this.camera);
+  }
 
-    // En pausa la simulación se congela: sin movimiento, sin tala ni daño, y los tiempos de
-    // caída y regeneración se detienen. La escena se sigue dibujando.
-    if (this.physics && !this.session.paused) {
-      // 1. Entrada → velocidad del cuerpo  2. Física en pasos fijos  3. Cuerpo → modelo
-      const held = this.session.attacking;
-      this.player.setAttack(held, held ? this.aimAssist() : null);
-      this.player.update(dt, this.camera);
-      this.physics.world.step(FIXED_STEP, dt, 5);
-      this.player.syncVisual(dt); // Aquí se detecta el impacto del hacha (onAttackImpact)
-      this.chopping.update(dt, this.player.position); // Caídas, madera y regeneración
-      // Recolección automática: los troncos cercanos pasan a la mochila (en pausa no se recoge)
-      const collected = this.chopping.wood.collect(dt, this.player.position, this.backpack, () => this.onBackpackFull());
-      if (collected > 0) this.onWoodCollected(collected);
-      this.updateSellZone();
-      this.saleCelebration.update(dt);
-      // Trabajadores: producen solo durante la partida (no en el menú, la pausa ni la tienda)
-      if (this.session.active) {
-        const units = this.production.update(dt, this.workerCount, this.storageFree());
-        if (units > 0) this.onWorkersProduce(units);
-        this.crew?.update(dt);
-      }
+  /**
+   * Un fotograma sin dibujar (se prueba sin WebGL).
+   * - Gameplay SOLO con la partida activa: ni en el menú, ni en las transiciones, ni en pausa,
+   *   ni con la tienda abierta (sin movimiento, ataques, tala, recogida, producción ni
+   *   regeneración).
+   * - En el menú solo se mueven la cámara cinematográfica y, como decoración, la animación de
+   *   los trabajadores (en silencio y sin producir).
+   */
+  tick(dt) {
+    if (this.physics && this.session.active) this.updateGameplay(dt);
+    else if (this.session.inMenu) {
+      // Decoración del menú: trabajadores y máquinas en movimiento (sin producir ni sonar)
+      this.crew?.update(dt, { silent: true });
+      this.sawmillStages?.update(dt, this.player.body?.position ?? null);
     }
 
-    // Cámara: sigue al personaje, gira con el ratón y evita terreno, troncos y estructuras
-    if (this.player.model) this.cameraRig.update(dt, this.player.position);
+    // Cámara: en la partida sigue al Worker; en el menú y en las transiciones, la del menú
+    if (this.session.playing) {
+      if (this.player.model) this.cameraRig.update(dt, this.player.position);
+    } else {
+      this.menuCamera.update(dt);
+    }
 
     // Los árboles con la cámara dentro de su copa se ocultan (si no, se ven "cortados")
     if (this.forest) this.forest.updateCameraOcclusion(this.camera.position);
 
-    this.updateShadowArea(this.cameraRig.pivot);
-    this.renderer.render(this.scene, this.camera);
+    // Sombras alrededor del jugador en la partida; alrededor del aserradero en el menú
+    this.updateShadowArea(this.session.playing ? this.cameraRig.pivot : this.menuCamera.focus);
+  }
+
+  /** Gameplay de un fotograma (solo con la partida activa). */
+  updateGameplay(dt) {
+    // 1. Entrada → velocidad del cuerpo  2. Física en pasos fijos  3. Cuerpo → modelo
+    const held = this.session.attacking;
+    this.player.setAttack(held, held ? this.aimAssist() : null);
+    this.player.update(dt, this.camera);
+    this.physics.world.step(FIXED_STEP, dt, 5);
+    this.player.syncVisual(dt); // Aquí se detecta el impacto del hacha (onAttackImpact)
+    this.chopping.update(dt, this.player.position); // Caídas, madera y regeneración
+    // Recolección automática: los troncos cercanos pasan a la mochila (en pausa no se recoge)
+    const collected = this.chopping.wood.collect(dt, this.player.position, this.backpack, () => this.onBackpackFull());
+    if (collected > 0) this.onWoodCollected(collected);
+    this.updateSellZone();
+    this.saleCelebration.update(dt);
+    // Trabajadores: producen solo durante la partida activa
+    const units = this.production.update(dt, this.workerCount, this.storageFree(), this.sawmillLevel);
+    if (units > 0) this.onWorkersProduce(units);
+    this.crew?.update(dt);
+    // Máquinas del aserradero (solo visual: no producen madera ni cambian la economía)
+    this.sawmillStages?.update(dt, this.player.body?.position ?? null);
   }
 }

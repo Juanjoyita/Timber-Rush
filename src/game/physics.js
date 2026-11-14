@@ -86,8 +86,22 @@ export function createPhysics(forest) {
   // arista. El contacto esfera-esfera es exacto y el más barato. Como el personaje siempre
   // camina por el suelo (no salta), una esfera centrada a su misma altura produce un choque
   // horizontal: en la práctica actúa como un cilindro vertical.
-  const obstacleSphere = (x, z, radius) =>
-    addStatic(new CANNON.Sphere(radius), x, heightAt(x, z) + PLAYER_RADIUS, z, materials.obstacle);
+  // "Tapa": una segunda esfera igual, más arriba. Si el personaje llega cuesta abajo (unos
+  // centímetros más alto que el centro del obstáculo), el contacto con la esfera baja le empuja
+  // un poco hacia arriba y, sin la tapa, terminaba subiéndose por encima de rocas y troncos. La
+  // tapa le frena ahí; a la altura del personaje el radio de choque no cambia.
+  const OBSTACLE_CAP = 0.5; // m sobre la esfera principal
+  const addObstacleShapes = (body, radius) => {
+    body.addShape(new CANNON.Sphere(radius));
+    body.addShape(new CANNON.Sphere(radius), new CANNON.Vec3(0, OBSTACLE_CAP, 0));
+  };
+  const obstacleSphere = (x, z, radius) => {
+    const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
+    body.position.set(x, heightAt(x, z) + PLAYER_RADIUS, z);
+    addObstacleShapes(body, radius); // Formas DESPUÉS de colocarlo (AABB correcta)
+    world.addBody(body);
+    return body;
+  };
 
   // Troncos: el cuerpo se crea siempre (userData.body) pero solo se añade al mundo cuando el
   // personaje está cerca (ver updateActiveTrunks). Se indexan en una rejilla espacial.
@@ -96,7 +110,7 @@ export function createPhysics(forest) {
     const { x, z } = tree.position;
     const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
     body.position.set(x, heightAt(x, z) + PLAYER_RADIUS, z);
-    body.addShape(new CANNON.Sphere(tree.userData.radius)); // Forma DESPUÉS de colocarlo (AABB correcta)
+    addObstacleShapes(body, tree.userData.radius); // Formas DESPUÉS de colocarlo (AABB correcta)
     tree.userData.body = body;
     const key = `${Math.floor(x / TRUNK_CELL)},${Math.floor(z / TRUNK_CELL)}`;
     if (!trunkGrid.has(key)) trunkGrid.set(key, []);
@@ -138,6 +152,43 @@ export function createPhysics(forest) {
     sawmill.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)), new CANNON.Vec3(c.x, c.y, c.z));
   }
   world.addBody(sawmill);
+
+  // --- Etapas del aserradero (evolución por niveles): un cuerpo estático que se sustituye ---
+  // Solo cambia al cargar el progreso o al comprar un nivel (nunca en cada fotograma).
+  let stageBody = null;
+  const setStageBoxes = (boxes) => {
+    if (stageBody) world.removeBody(stageBody);
+    stageBody = null;
+    if (!boxes.length) return;
+    stageBody = new CANNON.Body({ mass: 0, material: materials.obstacle });
+    for (const c of boxes) stageBody.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)), new CANNON.Vec3(c.x, c.y, c.z));
+    world.addBody(stageBody);
+  };
+
+  // --- Pieza móvil (la carretilla): caja CINEMÁTICA que se coloca desde el código ---
+  // No la mueve la simulación; la animación solo avanza si no va a tocar al personaje.
+  const createMovingBox = (hx, hy, hz) => {
+    const body = new CANNON.Body({ mass: 0, type: CANNON.Body.KINEMATIC, material: materials.obstacle });
+    body.addShape(new CANNON.Box(new CANNON.Vec3(hx, hy, hz)));
+    let inWorld = false;
+    return {
+      body,
+      moveTo(x, y, z) {
+        body.position.set(x, y, z);
+        body.previousPosition.set(x, y, z);
+        body.interpolatedPosition.set(x, y, z);
+        body.aabbNeedsUpdate = true;
+      },
+      setEnabled(on) {
+        if (on && !inWorld) world.addBody(body);
+        if (!on && inWorld) world.removeBody(body);
+        inWorld = on;
+      },
+      get enabled() {
+        return inWorld;
+      },
+    };
+  };
 
   // --- Troncos caídos: una caja estática orientada por tronco ---
   for (const c of forest.decorColliders) {
@@ -184,5 +235,5 @@ export function createPhysics(forest) {
     step(dt, timeSinceLastCalled, maxSubSteps);
   };
 
-  return { world, materials, createPlayerBody, activeTrunks, updateActiveTrunks };
+  return { world, materials, createPlayerBody, activeTrunks, updateActiveTrunks, setStageBoxes, createMovingBox };
 }

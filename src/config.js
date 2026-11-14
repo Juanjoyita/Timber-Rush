@@ -133,6 +133,13 @@ export const WORKERS = {
   interval: 5, // Segundos para que UN trabajador produzca una unidad de madera
   storageCapacity: 100, // Unidades máximas en el almacén (al llenarse, dejan de producir)
   saveDelay: 30000, // ms: la producción se guarda como mucho cada 30 s (no en cada unidad)
+  // Aserradero (variante moderada): cada nivel +10 % de ritmo por trabajador y, desde ciertos
+  // niveles, cada ciclo entrega un LOTE de varias unidades (ritmo medio = 12 × (1 + 0,1·nivel)/min)
+  productionBonusPerLevel: 0.1,
+  batches: [
+    { fromLevel: 9, size: 3 },
+    { fromLevel: 4, size: 2 },
+  ],
 };
 
 // Árboles: resistencia, caída, madera y regeneración

@@ -3,6 +3,7 @@
 // - Valor de venta: unidades × precio de su bosque de origen × bonificación del aserradero.
 // - Siguiente mejora: la más barata que aún no se tiene, con los precios aprobados (config.js).
 // - Tienda (Fase 8): ofertas de cada mejora (nivel actual, siguiente, precio y efecto).
+// - Producción de los trabajadores según el nivel del aserradero (ritmo y lotes).
 // Regla: los niveles solo cambian con una compra explícita confirmada (progressSync.buy).
 import { BACKPACK, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
 import { RESOURCE } from './backpack.js';
@@ -12,6 +13,19 @@ import { AXE_LEVELS } from './axes.js';
 export function sawmillMultiplier(level = 0) {
   const lvl = Math.min(10, Math.max(0, Math.floor(Number(level) || 0)));
   return 1 + ECONOMY.sawmillBonusPerLevel * lvl;
+}
+
+/**
+ * Producción de los trabajadores según el nivel del aserradero (variante moderada).
+ * - Ritmo por trabajador: (1 + 0,1·nivel) / intervalo unidades por segundo (12 → 24 por minuto).
+ * - Lote: 1 unidad (niveles 0-3), 2 (4-8) o 3 (9-10) por ciclo.
+ * - Ciclo de UN trabajador = lote / ritmo (5 s en el nivel 0; 7,5 s y 3 unidades en el 10).
+ */
+export function productionStats(level = 0, interval = WORKERS.interval) {
+  const L = Math.max(0, Math.floor(Number(level)) || 0);
+  const rate = (1 + (WORKERS.productionBonusPerLevel ?? 0) * L) / interval; // Unidades/s por trabajador
+  const batch = (WORKERS.batches ?? []).find((b) => L >= b.fromLevel)?.size ?? 1;
+  return { level: L, rate, batch, cycle: batch / rate, perMinute: rate * 60 };
 }
 
 /**
@@ -62,11 +76,19 @@ export function nextUpgrade(levels = {}, keys = SHOP.purchasable) {
 const levelOf = (key, levels) => levels[SHOP.columns[key]] ?? (key === 'axe' || key === 'backpack' ? 1 : 0);
 
 /** Efecto de una mejora en un nivel, en texto para la tienda. */
-export function upgradeEffect(key, level) {
+/** Número con un decimal como mucho y coma decimal (13,2 · 5 · 7,1). */
+const decimal = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
+
+export function upgradeEffect(key, level, levels = {}) {
   if (key === 'axe') return `Daño ${AXE_LEVELS[level - 1]?.damage ?? '?'} por golpe`;
   if (key === 'backpack') return `${BACKPACK.capacities[level - 1] ?? '?'} unidades`;
-  if (key === 'sawmill') return `+${Math.round(ECONOMY.sawmillBonusPerLevel * level * 100)} % al vender`;
-  if (key === 'workers') return level === 0 ? 'Sin trabajadores' : `${level} trabajador${level === 1 ? '' : 'es'} · ${level} madera${level === 1 ? '' : 's'} cada ${WORKERS.interval} s`;
+  if (key === 'sawmill') return `+${Math.round(ECONOMY.sawmillBonusPerLevel * level * 100)} % al vender · ${decimal(productionStats(level).perMinute)} maderas/min por trabajador`;
+  if (key === 'workers') {
+    if (level === 0) return 'Sin trabajadores';
+    // Con el nivel actual del aserradero: lote de cada trabajador y su ciclo
+    const { batch, cycle } = productionStats(levels.sawmillLevel ?? 0);
+    return `${level} trabajador${level === 1 ? '' : 'es'} · ${level * batch} madera${level * batch === 1 ? '' : 's'} cada ${decimal(cycle)} s`;
+  }
   return '';
 }
 
@@ -99,8 +121,8 @@ export function shopItems(levels = {}, coins = 0) {
       level: current,
       nextLevel: maxed ? null : next,
       cost: maxed ? null : cost,
-      effect: upgradeEffect(key, current),
-      nextEffect: maxed ? null : upgradeEffect(key, next),
+      effect: upgradeEffect(key, current, levels),
+      nextEffect: maxed ? null : upgradeEffect(key, next, levels),
       available, // Los trabajadores aún no (Fase 9)
       maxed,
       affordable: available && !maxed && coins >= cost,

@@ -5,19 +5,33 @@
 // FASE 7B: venta segura con F en el aserradero; la celebración solo llega tras confirmarla.
 // FASE 8: tienda con B: compras seguras de mejoras (hacha, mochila, aserradero).
 // FASE 9: trabajadores: producen madera en el almacén mientras se juega (se vende con F).
+// FASE 10: menú principal cinematográfico: Continuar (con comprobación del progreso y
+//          transición de cámara), Nueva partida (segura, con REINICIAR), Estadísticas,
+//          Configuración (en este navegador) y Cerrar sesión.
 import './style.css';
 import { Game } from './game/Game.js';
 import * as api from './appwrite.js';
 import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
-import { nextUpgrade, purchaseOffer, saleValue, shopItems } from './game/economy.js';
+import { nextUpgrade, productionStats, purchaseOffer, saleValue, shopItems } from './game/economy.js';
 import { SaleCelebrationSequence } from './game/saleSequence.js';
 import { FORESTS, WORKERS } from './config.js';
+import { Settings } from './settings.js';
 
-// La escena de prueba de la Fase 1 queda de fondo detrás de las pantallas.
-// En fases posteriores el juego solo se iniciará al pulsar "Jugar".
+// El bosque se dibuja desde el principio: detrás de la autenticación y del menú se ve la
+// vista cinematográfica (sin gameplay: el juego solo se simula al pulsar Continuar).
 const game = new Game(document.getElementById('game-container'));
 game.start();
+
+// Configuración del navegador (Fase 10): se aplica al instante y se conserva al recargar
+const settings = new Settings();
+game.applySettings(settings.values);
+settings.onChange = (values) => {
+  game.applySettings(values);
+  ui.renderSettings(values);
+};
+ui.renderSettings(settings.values);
+ui.bindSettings((key, value) => settings.set(key, value));
 
 let currentUser = null; // Usuario de Appwrite con sesión activa
 let busy = false; // Evita enviar dos peticiones a la vez
@@ -59,8 +73,10 @@ const SALE_MESSAGES = {
 game.onSellZoneChange = ui.showSellPrompt;
 
 // ---------- Trabajadores y almacén (Fase 9) ----------
-const renderStorage = () =>
-  ui.renderStorage({ total: sync.storageTotal, capacity: WORKERS.storageCapacity, workers: sync.levels.workers ?? 0, interval: WORKERS.interval });
+const renderStorage = () => {
+  const { batch, cycle } = productionStats(sync.levels.sawmillLevel ?? 0); // Ritmo según el aserradero
+  ui.renderStorage({ total: sync.storageTotal, capacity: WORKERS.storageCapacity, workers: sync.levels.workers ?? 0, batch, cycle });
+};
 sync.onStorageChange = (total) => {
   renderStorage();
   game.setStoragePile(total / WORKERS.storageCapacity); // La pila del aserradero crece con el almacén
@@ -110,6 +126,10 @@ sync.onPurchase = (purchase) => {
   if (purchase.key === 'axe') game.setAxeLevel(purchase.level);
   if (purchase.key === 'workers') {
     game.setWorkerCount(purchase.level); // Aparece en su puesto del aserradero y empieza a producir
+    renderStorage();
+  }
+  if (purchase.key === 'sawmill') {
+    game.setSawmillLevel(purchase.level); // Nuevas construcciones y trabajadores más productivos
     renderStorage();
   }
   ui.coinCounter.animateTo(purchase.coins);
@@ -165,14 +185,24 @@ function enterMenu(profile) {
   // Restaura la mochila (capacidad 20/40/80 según backpackLevel) desde la fila recién leída.
   // Si la lectura hubiera fallado no se llegaría aquí: nunca se confunde con una mochila vacía.
   const { damaged } = sync.attach(currentUser.$id, profile, game.backpack);
+  applyProgressToGame();
+  ui.clearAuthMessage();
+  if (damaged) ui.showAuthMessage('Los datos guardados de tu mochila no son válidos. No se modificarán hasta revisarlos.', 'error');
+  ui.showMenuSection('main');
+  ui.fadeMenu(false);
+  ui.showScreen('menu');
+}
+
+/** Lleva al juego y a la interfaz el progreso CONFIRMADO (al entrar, al restaurar o al reiniciar). */
+function applyProgressToGame() {
   ui.coinCounter.set(sync.coins); // Saldo real guardado, sin animación
   game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
+  game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
   renderStorage();
+  ui.renderBackpack(game.backpack);
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), sync.coins);
-  if (damaged) ui.showAuthMessage('Los datos guardados de tu mochila no son válidos. No se modificarán hasta revisarlos.', 'error');
-  ui.clearAuthMessage();
-  ui.showScreen('menu');
+  ui.renderMenu({ coins: sync.coins, totalCoinsEarned: sync.totalCoinsEarned, unlockedForests: sync.forests.unlockedForests });
 }
 
 // ---------- Menú principal ----------
@@ -191,19 +221,73 @@ game.onWoodCollected = (units) => sync.recordCollected(units);
 game.onBackpackFull = ui.flashBackpackFull;
 ui.renderBackpack(game.backpack);
 
+let entering = false; // "Continuar" en curso (evita dobles clics)
 ui.bindMenuEvents({
-  // Jugar y Continuar son clics del usuario: desde ellos se puede capturar el cursor
+  /**
+   * Continuar partida: 1) pide el cursor en este mismo clic (el navegador lo exige), 2) guarda
+   * lo pendiente y comprueba la fila en Appwrite (si otra sesión la cambió, se restaura), 3) solo
+   * entonces la cámara baja hasta el Worker y, al terminar, se activan los controles.
+   */
   onPlay: () => {
-    ui.showScreen('game');
-    game.setPlaying(true);
+    if (entering || !game.beginEnter()) return;
+    entering = true;
+    ui.fadeMenu(true);
+    (async () => {
+      try {
+        await game.ready;
+        const result = await sync.refreshFromServer();
+        if (!result.ok) throw new Error(result.reason);
+        if (result.reloaded) applyProgressToGame(); // Progreso cambiado en otra sesión
+        ui.showScreen('game');
+        game.startEnterTransition(() => {
+          entering = false;
+        });
+      } catch (error) {
+        console.error('[Timber Rush] No se pudo comprobar el progreso antes de jugar', error);
+        game.cancelEnter(); // Se libera el cursor y se queda en el menú
+        ui.fadeMenu(false);
+        entering = false;
+        ui.showAuthMessage('No se pudo comprobar tu progreso en Appwrite. Revisa la conexión e inténtalo de nuevo.', 'error');
+      }
+    })();
   },
   onResume: () => game.resume(),
+  /** Volver al menú (desde la pausa): se detiene la partida, se guarda y la cámara sube a la órbita. */
   onBackToMenu: () => {
-    game.setPlaying(false);
+    const left = game.leaveToMenu(() => {
+      ui.showMenuSection('main');
+      ui.fadeMenu(false); // El panel aparece cuando la cámara ya está en la órbita
+    });
+    if (!left) return;
+    ui.fadeMenu(true);
     ui.showScreen('menu');
     sync.flush(); // Guardar al volver al menú
   },
+  onShowStats: () => ui.renderStats(sync.stats()),
+  /** Nueva partida: solo llega aquí con "REINICIAR" escrito (lo comprueba ui.js). */
+  onNewGame: async () => {
+    ui.setNewGameBusy(true);
+    ui.setNewGameStatus('Reiniciando… no cierres la página.');
+    const result = await sync.resetProgress();
+    ui.setNewGameBusy(false);
+    if (result.ok) return; // onReset ya lo aplicó
+    if (result.pending) ui.setNewGameStatus('Sin respuesta de Appwrite: comprobando si se reinició…', true);
+    else ui.setNewGameStatus(`No se reinició nada (${result.reason ?? result.status}). Tu partida sigue igual.`, true);
+  },
 });
+
+// ---------- Nueva partida (Fase 10) ----------
+// Solo con el reinicio CONFIRMADO por Appwrite (también si se confirma más tarde, tras una
+// respuesta perdida): bosque intacto, Worker al inicio y todo el progreso a sus valores iniciales.
+sync.onReset = () => {
+  celebration.cancel();
+  game.resetWorld();
+  applyProgressToGame();
+  ui.setNewGameStatus('¡Nueva partida lista! Pulsa «Continuar partida» para empezar.');
+};
+sync.onResetFailed = (reason) => {
+  ui.setNewGameStatus(`El reinicio no se completó (${reason}). Tu partida sigue igual.`, true);
+};
 
 // ---------- Manejadores de los formularios ----------
 ui.bindAuthEvents({

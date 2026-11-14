@@ -58,7 +58,7 @@ const formatNumber = (n) => Number(n ?? 0).toLocaleString('es-ES');
 
 /** Rellena el menú con los datos de la fila de progreso. */
 export function renderMenu(profile) {
-  $('menu-username').textContent = profile.username;
+  if (profile.username !== undefined) $('menu-username').textContent = profile.username;
   $('menu-coins').textContent = formatNumber(profile.coins);
   $('menu-total').textContent = formatNumber(profile.totalCoinsEarned);
   $('menu-forests').textContent = `${profile.unlockedForests ?? 1}/5`;
@@ -68,6 +68,91 @@ export function bindMenuEvents(handlers) {
   $('btn-play').addEventListener('click', handlers.onPlay);
   $('btn-back-menu').addEventListener('click', handlers.onBackToMenu);
   $('btn-resume').addEventListener('click', handlers.onResume);
+  // Fase 10: subpaneles del menú
+  $('btn-stats').addEventListener('click', () => {
+    handlers.onShowStats();
+    showMenuSection('stats');
+  });
+  $('btn-settings').addEventListener('click', () => showMenuSection('settings'));
+  $('btn-new-game').addEventListener('click', () => showMenuSection('newgame'));
+  document.querySelectorAll('#screen-menu [data-back]').forEach((b) => b.addEventListener('click', () => showMenuSection('main')));
+  // Nueva partida: el botón solo se activa con la palabra exacta
+  $('newgame-confirm').addEventListener('input', () => {
+    $('btn-newgame-confirm').disabled = !isResetConfirmed($('newgame-confirm').value);
+  });
+  $('btn-newgame-confirm').addEventListener('click', () => {
+    if (isResetConfirmed($('newgame-confirm').value)) handlers.onNewGame();
+  });
+}
+
+// ---------- Menú principal (Fase 10) ----------
+
+/** Palabra exacta para confirmar una partida nueva (sin espacios de más ni minúsculas). */
+export const RESET_WORD = 'REINICIAR';
+export const isResetConfirmed = (text) => text === RESET_WORD;
+
+/** Muestra la navegación principal o uno de sus subpaneles: 'main' | 'stats' | 'settings' | 'newgame'. */
+export function showMenuSection(name) {
+  $('menu-main').classList.toggle('hidden', name !== 'main');
+  $('menu-stats').classList.toggle('hidden', name !== 'stats');
+  $('menu-settings').classList.toggle('hidden', name !== 'settings');
+  $('menu-newgame').classList.toggle('hidden', name !== 'newgame');
+  if (name !== 'newgame') {
+    // Al salir de la confirmación se olvida lo escrito: siempre hay que volver a escribirlo
+    $('newgame-confirm').value = '';
+    $('btn-newgame-confirm').disabled = true;
+    setNewGameStatus('');
+  }
+}
+
+/** Desvanece el menú al entrar a jugar (o lo vuelve a mostrar). */
+export function fadeMenu(leaving) {
+  $('screen-menu').classList.toggle('is-leaving', leaving);
+}
+
+export function setNewGameStatus(text, error = false) {
+  const el = $('newgame-status');
+  el.textContent = text;
+  el.classList.toggle('is-error', error);
+}
+
+/** Bloquea los controles de la confirmación mientras se reinicia. */
+export function setNewGameBusy(busy) {
+  $('btn-newgame-confirm').disabled = busy || !isResetConfirmed($('newgame-confirm').value);
+  $('newgame-confirm').disabled = busy;
+}
+
+/** Panel de estadísticas con los datos CONFIRMADOS (progressSync.stats()). */
+export function renderStats(st) {
+  $('st-wood').textContent = formatNumber(st.totalWoodCollected);
+  $('st-earned').textContent = formatNumber(st.totalCoinsEarned);
+  $('st-coins').textContent = formatNumber(st.coins);
+  $('st-axe').textContent = `Nivel ${st.axeLevel}`;
+  $('st-backpack').textContent = `Nivel ${st.backpackLevel}`;
+  $('st-sawmill').textContent = `Nivel ${st.sawmillLevel}`;
+  $('st-workers').textContent = formatNumber(st.workers);
+  $('st-bp-wood').textContent = `${formatNumber(st.backpack)} / ${formatNumber(st.backpackCapacity)}`;
+  $('st-storage').textContent = `${formatNumber(st.storage)} / ${formatNumber(st.storageCapacity)}`;
+  $('st-forests').textContent = `${st.currentForest} · ${st.unlockedForests}/5`;
+}
+
+/** Controles de configuración con los valores actuales. */
+export function renderSettings(v) {
+  $('set-master').value = Math.round(v.masterVolume * 100);
+  $('set-effects').value = Math.round(v.effectsVolume * 100);
+  $('set-sensitivity').value = Math.round(v.sensitivity * 100);
+  $('out-master').textContent = `${Math.round(v.masterVolume * 100)} %`;
+  $('out-effects').textContent = `${Math.round(v.effectsVolume * 100)} %`;
+  $('out-sensitivity').textContent = `${v.sensitivity.toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}×`;
+  document.querySelectorAll('#menu-settings [data-quality]').forEach((b) => b.classList.toggle('is-active', b.dataset.quality === v.quality));
+}
+
+/** Cada cambio de un control llama a onChange(clave, valor) (se aplica y guarda al momento). */
+export function bindSettings(onChange) {
+  $('set-master').addEventListener('input', (e) => onChange('masterVolume', Number(e.target.value) / 100));
+  $('set-effects').addEventListener('input', (e) => onChange('effectsVolume', Number(e.target.value) / 100));
+  $('set-sensitivity').addEventListener('input', (e) => onChange('sensitivity', Number(e.target.value) / 100));
+  document.querySelectorAll('#menu-settings [data-quality]').forEach((b) => b.addEventListener('click', () => onChange('quality', b.dataset.quality)));
 }
 
 // ---------- Pantalla de juego ----------
@@ -307,7 +392,11 @@ export function updateMenuCoins(coins, totalCoinsEarned) {
  * Indicador del almacén: lo producido por los trabajadores. Solo aparece si hay trabajadores
  * o madera almacenada.
  */
-export function renderStorage({ total, capacity, workers, interval }) {
+/**
+ * Indicador del almacén. batch/cycle: lote y ciclo de UN trabajador según el nivel del
+ * aserradero (economy.productionStats); con varios trabajadores llega un lote cada cycle/workers.
+ */
+export function renderStorage({ total, capacity, workers, batch = 1, cycle = 5 }) {
   const hud = $('storage-hud');
   hud.classList.toggle('hidden', workers === 0 && total === 0);
   const full = total >= capacity;
@@ -318,7 +407,7 @@ export function renderStorage({ total, capacity, workers, interval }) {
     ? 'Sin trabajadores'
     : full
       ? `${workers} trabajador${workers === 1 ? '' : 'es'} esperando: vende con F`
-      : `${workers} trabajador${workers === 1 ? '' : 'es'} · +1 madera cada ${formatNumber(Math.round((interval / workers) * 10) / 10)} s`;
+      : `${workers} trabajador${workers === 1 ? '' : 'es'} · +${batch} madera${batch === 1 ? '' : 's'} cada ${formatNumber(Math.round((cycle / workers) * 10) / 10)} s`;
 }
 
 // ---------- Tienda (Fase 8) ----------

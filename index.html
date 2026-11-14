@@ -72,44 +72,109 @@
     </section>
 
     <!-- ===== Pantalla 2: Menú principal ===== -->
-    <section id="screen-menu" class="screen hidden">
-      <div class="panel">
-        <h1 class="logo">Timber Rush <span>3D</span></h1>
-        <p>¡Hola, <strong id="menu-username"></strong>!</p>
+    <!-- Menú principal (Fase 10): panel lateral sobre la vista cinematográfica del bosque -->
+    <section id="screen-menu" class="screen screen-menu hidden">
+      <aside class="menu-panel" aria-labelledby="menu-title">
+        <h1 id="menu-title" class="menu-title">TIMBER RUSH <span>3D</span></h1>
+        <p class="menu-greeting">¡Hola, <strong id="menu-username"></strong>!</p>
 
-        <!-- Resumen del progreso (datos de la fila de Appwrite) -->
-        <div class="stats">
-          <div class="stat">
-            <span class="stat-value" id="menu-coins">0</span>
-            <span class="stat-label">Monedas</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="menu-total">0</span>
-            <span class="stat-label">Total ganado</span>
-          </div>
-          <div class="stat">
-            <span class="stat-value" id="menu-forests">1/5</span>
-            <span class="stat-label">Bosques</span>
-          </div>
+        <!-- Resumen rápido (valores confirmados en Appwrite) -->
+        <div class="menu-summary">
+          <div class="menu-chip"><span class="stat-value" id="menu-coins">0</span><span class="stat-label">Monedas</span></div>
+          <div class="menu-chip"><span class="stat-value" id="menu-total">0</span><span class="stat-label">Total ganado</span></div>
+          <div class="menu-chip"><span class="stat-value" id="menu-forests">1/5</span><span class="stat-label">Bosques</span></div>
         </div>
 
-        <button type="button" id="btn-play" class="btn btn-primary btn-large">Jugar</button>
+        <!-- Navegación principal -->
+        <nav id="menu-main" class="menu-nav" aria-label="Menú principal">
+          <button type="button" id="btn-play" class="menu-btn menu-btn-primary">
+            <svg class="menu-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M8 26 22 12" stroke="#6b4423" stroke-width="3" stroke-linecap="round"/><path d="M18 6l8 8-5 2-5-5z" fill="#c9ced3"/></svg>
+            <span>Continuar partida</span>
+          </button>
+          <button type="button" id="btn-new-game" class="menu-btn">
+            <svg class="menu-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M24 16a8 8 0 1 1-3-6.2" fill="none" stroke="#f5ecd7" stroke-width="3" stroke-linecap="round"/><path d="M19 5l4 4.5-5 1.5z" fill="#f5ecd7"/></svg>
+            <span>Nueva partida</span>
+          </button>
+          <button type="button" id="btn-stats" class="menu-btn">
+            <svg class="menu-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M10 6h12v6a6 6 0 0 1-12 0z" fill="#e0b43a"/><path d="M14 18h4v5h-4zM10 24h12v3H10z" fill="#b88d1f"/></svg>
+            <span>Estadísticas</span>
+          </button>
+          <button type="button" id="btn-settings" class="menu-btn">
+            <svg class="menu-icon" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="9" fill="none" stroke="#cfd8c4" stroke-width="4" stroke-dasharray="4 3"/><circle cx="16" cy="16" r="4" fill="#cfd8c4"/></svg>
+            <span>Configuración</span>
+          </button>
+          <button type="button" id="btn-logout" class="menu-btn menu-btn-quiet">
+            <svg class="menu-icon" viewBox="0 0 32 32" aria-hidden="true"><path d="M7 5h11v22H7z" fill="#8a5a33"/><path d="M18 16h9m-3-3 3 3-3 3" stroke="#f5ecd7" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>
+            <span>Cerrar sesión</span>
+          </button>
+        </nav>
 
-        <!-- Recordatorio de controles -->
-        <ul class="controls">
-          <li><kbd>WASD</kbd> Caminar</li>
-          <li><kbd>Shift</kbd> Correr</li>
-          <li><kbd>Ratón</kbd> Cámara</li>
-          <li><kbd>Rueda</kbd> Zoom</li>
-          <li><kbd>Clic izq.</kbd> Hachazo / talar (mantener)</li>
-          <li><kbd>ESC</kbd> Pausa</li>
-          <li><kbd>F</kbd> Vender</li>
-          <li><kbd>B</kbd> Tienda</li>
-        </ul>
+        <!-- Estadísticas (solo datos que ya se guardan) -->
+        <div id="menu-stats" class="menu-sub hidden" role="region" aria-labelledby="stats-title">
+          <h2 id="stats-title" class="menu-sub-title">Estadísticas</h2>
+          <dl class="stats-list">
+            <div><dt>Madera recogida (total)</dt><dd id="st-wood">0</dd></div>
+            <div><dt>Monedas ganadas (total)</dt><dd id="st-earned">0</dd></div>
+            <div><dt>Monedas disponibles</dt><dd id="st-coins">0</dd></div>
+            <div><dt>Hacha</dt><dd id="st-axe">Nivel 1</dd></div>
+            <div><dt>Mochila</dt><dd id="st-backpack">Nivel 1</dd></div>
+            <div><dt>Aserradero</dt><dd id="st-sawmill">Nivel 0</dd></div>
+            <div><dt>Trabajadores</dt><dd id="st-workers">0</dd></div>
+            <div><dt>Madera en la mochila</dt><dd id="st-bp-wood">0 / 20</dd></div>
+            <div><dt>Madera en el almacén</dt><dd id="st-storage">0 / 100</dd></div>
+            <div><dt>Bosque actual · desbloqueados</dt><dd id="st-forests">1 · 1/5</dd></div>
+          </dl>
+          <button type="button" class="menu-back btn btn-secondary btn-small" data-back>← Volver</button>
+        </div>
 
-        <button type="button" id="btn-logout" class="btn btn-secondary">Cerrar sesión</button>
+        <!-- Configuración (se guarda en este navegador) -->
+        <div id="menu-settings" class="menu-sub hidden" role="region" aria-labelledby="settings-title">
+          <h2 id="settings-title" class="menu-sub-title">Configuración</h2>
+          <label class="setting">Volumen general <output id="out-master">80 %</output>
+            <input type="range" id="set-master" min="0" max="100" step="5" />
+          </label>
+          <label class="setting">Volumen de efectos <output id="out-effects">100 %</output>
+            <input type="range" id="set-effects" min="0" max="100" step="5" />
+          </label>
+          <label class="setting">Sensibilidad del ratón <output id="out-sensitivity">1,0×</output>
+            <input type="range" id="set-sensitivity" min="30" max="200" step="10" />
+          </label>
+          <div class="setting">Calidad gráfica
+            <div class="quality-toggle" role="group" aria-label="Calidad gráfica">
+              <button type="button" class="btn btn-small" data-quality="high">Alta</button>
+              <button type="button" class="btn btn-small" data-quality="low">Baja</button>
+            </div>
+          </div>
+          <details class="menu-controls">
+            <summary>Controles</summary>
+            <ul class="controls">
+              <li><kbd>WASD</kbd> Caminar</li>
+              <li><kbd>Shift</kbd> Correr</li>
+              <li><kbd>Ratón</kbd> Cámara</li>
+              <li><kbd>Rueda</kbd> Zoom</li>
+              <li><kbd>Clic izq.</kbd> Hachazo / talar (mantener)</li>
+              <li><kbd>ESC</kbd> Pausa</li>
+              <li><kbd>F</kbd> Vender</li>
+              <li><kbd>B</kbd> Tienda</li>
+            </ul>
+          </details>
+          <button type="button" class="menu-back btn btn-secondary btn-small" data-back>← Volver</button>
+        </div>
+
+        <!-- Nueva partida: confirmación (no se borra nada sin escribir REINICIAR) -->
+        <div id="menu-newgame" class="menu-sub hidden" role="region" aria-labelledby="newgame-title">
+          <h2 id="newgame-title" class="menu-sub-title">Nueva partida</h2>
+          <p class="newgame-warning">Se <strong>reemplazará tu partida actual</strong> y no se podrá recuperar: monedas, monedas y madera totales, mejoras del hacha, la mochila y el aserradero, trabajadores, mochila y almacén volverán a cero. Tu cuenta y tu nombre se conservan.</p>
+          <label class="setting">Escribe <strong>REINICIAR</strong> para confirmar
+            <input type="text" id="newgame-confirm" autocomplete="off" spellcheck="false" />
+          </label>
+          <button type="button" id="btn-newgame-confirm" class="btn btn-danger" disabled>Empezar de cero</button>
+          <button type="button" class="menu-back btn btn-secondary btn-small" data-back>Cancelar</button>
+          <p id="newgame-status" class="newgame-status" role="status" aria-live="polite"></p>
+        </div>
+
         <p id="menu-message" class="message hidden" role="alert"></p>
-      </div>
+      </aside>
     </section>
 
     <!-- ===== Pantalla 3: Juego 3D (el HUD se construye en fases posteriores) ===== -->

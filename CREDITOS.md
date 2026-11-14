@@ -36,6 +36,30 @@
   de UAL2 adaptada a su esqueleto. Generado con `herramientas/retarget_worker.py` (Blender 5.2.0).
   Ambos orígenes son CC0.
 
+### Low Poly Lumber Mill Pack (evolución del aserradero)
+- **Autor:** reodesuxz
+- **Licencia:** la incluida en el paquete (`LICENSE.txt`, verificada antes de integrarlo):
+  permite *«Use in unlimited personal and commercial projects (games, apps, films, renders,
+  prototypes)»* y *«Modify the assets for use in your projects»*; prohíbe *«redistributing the
+  asset files, modified or unmodified, as standalone assets or as part of another asset pack
+  or library»*.
+- **Cumplimiento:** los archivos originales del paquete NO están en el repositorio ni en
+  `public/` (siguen en `recursos-originales/`, ignorado por git). El juego solo incluye
+  `public/assets/models/aserradero.glb`, un archivo propio generado con
+  `herramientas/preparar_aserradero.py` (Blender 5.2.0) que contiene únicamente los 22 modelos
+  usados, ya adaptados al juego (no es un paquete de recursos reutilizable):
+  - colores de los materiales pasados a colores de vértice (un solo material en el juego);
+  - maderas y tejado ajustados a la paleta del aserradero (`wood` #c08a52, `wood2` #8a5a33,
+    `roof` #b3432f);
+  - el disco de la sierra circular separado en una pieza propia para poder girarlo;
+  - sin normales ni coordenadas de textura (el juego usa sombreado plano).
+- **Modelos usados:** `mill_sign`, `sawhorse`, `firewood_stack`, `stump_chopping_block`,
+  `log_cart`, `log_cabin_office`, `plank_stack_big`, `lumber_bundle`, `drying_shed`,
+  `circular_saw_table`, `band_saw`, `sawdust_pile`, `log_conveyor`, `log_splitter`,
+  `sawmill_building`, `sawmill_boiler`, `sawdust_blower`, `forklift_log_loader`, `log_pile`,
+  `watchtower`, `fuel_barrel`, `single_log`.
+- **Crédito:** «Low Poly Lumber Mill Pack by reodesuxz».
+
 ### Personaje anterior (ya no se usa)
 - **Autor:** Quaternius · **Archivo:** `public/assets/models/lumberjack.glb`
 - Sustituido por el Worker en la Fase 5. Se conserva hasta confirmar el cambio visualmente.

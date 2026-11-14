@@ -474,6 +474,29 @@ export class ChoppingSystem {
     this.onEvent({ type: 'regrow', tree, position: tree.position.clone() });
   }
 
+  // ---------- Reinicio (Fase 10) ----------
+
+  /**
+   * Bosque como al empezar: todos los árboles en pie con su resistencia completa, sin tocones,
+   * sin caídas ni crecimientos en curso y sin madera en el suelo. Para "Nueva partida" y al
+   * cambiar de cuenta (los árboles talados por una cuenta no deben verse en la de otra).
+   */
+  resetAll() {
+    for (const a of this.animations) this.releaseVisual(a.pivot);
+    this.animations.length = 0;
+    for (const tree of this.forest.trees) {
+      if (tree.state !== TREE_STATE.AVAILABLE) {
+        this.forest.setTreeHidden(tree, HIDE_REASON.FELLED, false);
+        this.showStump(tree, false);
+      }
+      tree.state = TREE_STATE.AVAILABLE;
+      tree.resistance = this.maxResistance;
+      tree.felledAt = null;
+    }
+    this.felled.clear();
+    this.wood.clear();
+  }
+
   // ---------- Bucle ----------
 
   update(dt, playerPosition) {

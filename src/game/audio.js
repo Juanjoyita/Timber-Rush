@@ -52,6 +52,7 @@ export class AudioManager {
    */
   constructor(camera, scene, { listener = null, createSource = null, createUiSource = null, loader = null, config = AUDIO } = {}) {
     this.config = config;
+    this.effectsVolume = 1; // Configuración (Fase 10): volumen de efectos (0..1), aparte del general
     this.listener = listener ?? new THREE.AudioListener();
     this.listener.setMasterVolume(config.masterVolume);
     camera.add(this.listener);
@@ -109,6 +110,11 @@ export class AudioManager {
     target.addEventListener('keydown', unlock);
   }
 
+  /** Volumen de los efectos (0..1): se aplica a los siguientes sonidos que se reproduzcan. */
+  setEffectsVolume(volume) {
+    this.effectsVolume = Math.min(1, Math.max(0, Number(volume) || 0));
+  }
+
   setMasterVolume(volume) {
     this.config.masterVolume = volume;
     this.listener.setMasterVolume(volume);
@@ -139,7 +145,7 @@ export class AudioManager {
     source.duration = cfg.duration; // undefined = hasta el final
     // Variación de volumen opcional (p. ej. pasos): cada repetición suena un poco distinta
     const volumeVariation = cfg.volumeVariation ?? 0;
-    source.setVolume((cfg.volume ?? 1) * (1 - Math.random() * volumeVariation));
+    source.setVolume((cfg.volume ?? 1) * this.effectsVolume * (1 - Math.random() * volumeVariation));
     const variation = cfg.pitchVariation ?? 0;
     source.setPlaybackRate(1 + (Math.random() * 2 - 1) * variation); // Evita que suene repetitivo
     source.play();
@@ -163,7 +169,7 @@ export class AudioManager {
       if (!source || !buffer || this.listener.context.state !== 'running') return false;
       if (source.isPlaying) source.stop();
       source.setBuffer(buffer);
-      source.setVolume(cfg.volume ?? 1);
+      source.setVolume((cfg.volume ?? 1) * this.effectsVolume);
       source.play(delay);
       return true;
     } catch (error) {
