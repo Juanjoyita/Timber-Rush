@@ -548,6 +548,22 @@ function createSawmill(geometries, logNames, mats) {
   box('gold', 0.15, 0.16, 3.8, 8.85, 0.08, -1.5);
   box('dark', 0.15, 2.4, 0.15, 8.95, 1.2, 0.45, solid); // Poste del farol
 
+  // --- Puestos de los trabajadores (Fase 9): bajo el cobertizo, entre el murete y la mesa ---
+  // Cada puesto: un tocón donde se corta la madera y el sitio del Worker, que mira hacia +X
+  // (el frente abierto: se le ve trabajar al acercarse). Una caja sólida evita atravesarlos.
+  const workerSpots = [];
+  for (const z of [-1.5, 1.5]) {
+    const block = new THREE.Mesh(geometries.nature_stump_01, mats.nature);
+    block.name = 'tocon-de-trabajo';
+    block.position.set(-1.45, 0.15, z);
+    block.scale.setScalar(0.6);
+    block.castShadow = true;
+    block.receiveShadow = true;
+    group.add(block);
+    addCollider(1.7, 1.8, 1.0, -1.95, 0.9, z);
+    workerSpots.push({ x: SM.x - 2.3, y: 0.15, z: SM.z + z, yaw: Math.PI / 2 });
+  }
+
   // Farol: PointLight cálida que señala la zona de venta. Sin sombras y alcance corto.
   const lantern = mesh(boxGeo, mats.lantern, { cast: false });
   lantern.scale.set(0.25, 0.35, 0.25);
@@ -567,7 +583,7 @@ function createSawmill(geometries, logNames, mats) {
 
   /**
    * Muestra la pila de troncos llena en la proporción indicada (0 = vacía, 1 = llena).
-   * Preparado para una fase posterior; de momento se muestra llena.
+   * Fase 9: refleja lo que hay en el almacén (la madera de los trabajadores).
    */
   const setLogPile = (fraction) => {
     const n = Math.round(Math.max(0, Math.min(1, fraction)) * slots.length);
@@ -578,7 +594,7 @@ function createSawmill(geometries, logNames, mats) {
   // Obstáculos para la cámara: las piezas sólidas + el volumen del tejado
   const cameraBoxes = [...colliders, { x: SM.x, y: 4.3, z: SM.z, hx: 4.4, hy: 1.0, hz: 3.2 }];
 
-  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes };
+  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes, workerSpots };
 }
 
 // ---------- Zonas reservadas ----------
@@ -1030,6 +1046,7 @@ export function createForest(config, geometries) {
     cameraBoxes: sawmill.cameraBoxes, // Cajas que la cámara no atraviesa (aserradero y tejado)
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
+    workerSpots: sawmill.workerSpots, // Puestos de los trabajadores del aserradero (Fase 9)
     geometries, // Geometrías compartidas (la tala las reutiliza para tocones, caídas y troncos)
   };
 }

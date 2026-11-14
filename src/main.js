@@ -4,6 +4,7 @@
 // FASE 7A: la mochila se restaura al entrar y se guarda en Appwrite (progressSync.js).
 // FASE 7B: venta segura con F en el aserradero; la celebración solo llega tras confirmarla.
 // FASE 8: tienda con B: compras seguras de mejoras (hacha, mochila, aserradero).
+// FASE 9: trabajadores: producen madera en el almacén mientras se juega (se vende con F).
 import './style.css';
 import { Game } from './game/Game.js';
 import * as api from './appwrite.js';
@@ -11,6 +12,7 @@ import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
 import { nextUpgrade, purchaseOffer, saleValue, shopItems } from './game/economy.js';
 import { SaleCelebrationSequence } from './game/saleSequence.js';
+import { FORESTS, WORKERS } from './config.js';
 
 // La escena de prueba de la Fase 1 queda de fondo detrás de las pantallas.
 // En fases posteriores el juego solo se iniciará al pulsar "Jugar".
@@ -25,6 +27,8 @@ const sync = new ProgressSync({
   api: { getProfile: api.getProfile, save: api.saveProgressFields, probe: api.probeVersionGuard, classify: api.classifySaveError },
   saleValue,
   purchaseOffer,
+  storageCapacity: WORKERS.storageCapacity,
+  productionDelay: WORKERS.saveDelay, // La producción se guarda como mucho cada 30 s
 });
 sync.onStatus = ui.showSaveStatus;
 
@@ -53,6 +57,17 @@ const SALE_MESSAGES = {
   [SAVE_STATUS.BLOCKED]: 'No se puede vender: los datos guardados no son válidos.',
 };
 game.onSellZoneChange = ui.showSellPrompt;
+
+// ---------- Trabajadores y almacén (Fase 9) ----------
+const renderStorage = () =>
+  ui.renderStorage({ total: sync.storageTotal, capacity: WORKERS.storageCapacity, workers: sync.levels.workers ?? 0, interval: WORKERS.interval });
+sync.onStorageChange = (total) => {
+  renderStorage();
+  game.setStoragePile(total / WORKERS.storageCapacity); // La pila del aserradero crece con el almacén
+};
+game.storageFree = () => sync.storageFree;
+// Madera del bosque actual (por ahora, el Bosque Verde)
+game.onWorkersProduce = (units) => sync.addToStorage(FORESTS[0].id, units);
 
 // ---------- Tienda (Fase 8) ----------
 // Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
@@ -93,6 +108,10 @@ sync.onPurchase = (purchase) => {
   // Efectos solo con la compra confirmada: hacha en la mano y daño, capacidad de la mochila
   // (la aplica sync) o bonificación del aserradero (la usa la próxima venta)
   if (purchase.key === 'axe') game.setAxeLevel(purchase.level);
+  if (purchase.key === 'workers') {
+    game.setWorkerCount(purchase.level); // Aparece en su puesto del aserradero y empieza a producir
+    renderStorage();
+  }
   ui.coinCounter.animateTo(purchase.coins);
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), purchase.coins);
   ui.updateMenuCoins(purchase.coins, sync.totalCoinsEarned);
@@ -148,6 +167,8 @@ function enterMenu(profile) {
   const { damaged } = sync.attach(currentUser.$id, profile, game.backpack);
   ui.coinCounter.set(sync.coins); // Saldo real guardado, sin animación
   game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
+  game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
+  renderStorage();
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), sync.coins);
   if (damaged) ui.showAuthMessage('Los datos guardados de tu mochila no son válidos. No se modificarán hasta revisarlos.', 'error');
   ui.clearAuthMessage();

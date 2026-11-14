@@ -301,6 +301,26 @@ export function updateMenuCoins(coins, totalCoinsEarned) {
   $('menu-total').textContent = formatNumber(totalCoinsEarned);
 }
 
+// ---------- Almacén (Fase 9) ----------
+
+/**
+ * Indicador del almacén: lo producido por los trabajadores. Solo aparece si hay trabajadores
+ * o madera almacenada.
+ */
+export function renderStorage({ total, capacity, workers, interval }) {
+  const hud = $('storage-hud');
+  hud.classList.toggle('hidden', workers === 0 && total === 0);
+  const full = total >= capacity;
+  $('storage-count').textContent = `Almacén ${formatNumber(total)} / ${formatNumber(capacity)}${full ? ' · ¡lleno!' : ''}`;
+  $('storage-fill').style.width = `${Math.min(100, (total / capacity) * 100)}%`;
+  hud.classList.toggle('is-full', full);
+  $('storage-workers').textContent = workers === 0
+    ? 'Sin trabajadores'
+    : full
+      ? `${workers} trabajador${workers === 1 ? '' : 'es'} esperando: vende con F`
+      : `${workers} trabajador${workers === 1 ? '' : 'es'} · +1 madera cada ${formatNumber(Math.round((interval / workers) * 10) / 10)} s`;
+}
+
 // ---------- Tienda (Fase 8) ----------
 
 /** Muestra u oculta el panel de la tienda. */

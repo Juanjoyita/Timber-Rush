@@ -4,7 +4,7 @@
 // - Siguiente mejora: la más barata que aún no se tiene, con los precios aprobados (config.js).
 // - Tienda (Fase 8): ofertas de cada mejora (nivel actual, siguiente, precio y efecto).
 // Regla: los niveles solo cambian con una compra explícita confirmada (progressSync.buy).
-import { BACKPACK, ECONOMY, FORESTS, SHOP, UPGRADES } from '../config.js';
+import { BACKPACK, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
 import { RESOURCE } from './backpack.js';
 import { AXE_LEVELS } from './axes.js';
 
@@ -66,7 +66,7 @@ export function upgradeEffect(key, level) {
   if (key === 'axe') return `Daño ${AXE_LEVELS[level - 1]?.damage ?? '?'} por golpe`;
   if (key === 'backpack') return `${BACKPACK.capacities[level - 1] ?? '?'} unidades`;
   if (key === 'sawmill') return `+${Math.round(ECONOMY.sawmillBonusPerLevel * level * 100)} % al vender`;
-  if (key === 'workers') return `${level} trabajador${level === 1 ? '' : 'es'}`;
+  if (key === 'workers') return level === 0 ? 'Sin trabajadores' : `${level} trabajador${level === 1 ? '' : 'es'} · ${level} madera${level === 1 ? '' : 's'} cada ${WORKERS.interval} s`;
   return '';
 }
 

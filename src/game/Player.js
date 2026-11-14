@@ -104,6 +104,24 @@ function buildGripClip(chopClip, clips) {
 }
 
 /**
+ * Soporte del hacha en la mano derecha (hueso WristR) de un modelo del Worker. Lo usan el
+ * jugador y los trabajadores del aserradero.
+ */
+export function createAxeSocket(model) {
+  const bone = model.getObjectByName(AXE_SOCKET.bone);
+  if (!bone) throw new Error(`falta el hueso ${AXE_SOCKET.bone} en worker.glb`);
+  const y = AXE_SOCKET.handleDir.clone().normalize();
+  const x = AXE_SOCKET.bladeDir.clone().sub(y.clone().multiplyScalar(AXE_SOCKET.bladeDir.dot(y))).normalize();
+  const z = new THREE.Vector3().crossVectors(x, y);
+  const socket = new THREE.Object3D();
+  socket.name = 'soporte-hacha';
+  socket.position.copy(AXE_SOCKET.gripPoint);
+  socket.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+  bone.add(socket);
+  return socket;
+}
+
+/**
  * Instantes de un ciclo en los que cada pie toca el suelo: el hueso del pie, al bajar, cruza
  * FOOT_CONTACT_HEIGHT sobre su punto más bajo. Se calcula una vez muestreando la animación.
  * @returns [{ time, foot: 'L' | 'R' }] ordenados por tiempo
@@ -218,6 +236,10 @@ export class Player {
     // Puño cerrado permanente en la mano del hacha (capa independiente de las demás animaciones)
     const grip = buildGripClip(clips.chop, Object.values(clips));
     this.mixer.clipAction(grip).play();
+    // Para los trabajadores del aserradero (Fase 9): mismo modelo, animación de tala y puño
+    this.gltf = gltf;
+    this.gripClip = grip;
+    this.chopClip = clips.chop;
     for (const [key, clip] of Object.entries(clips)) this.actions[key] = this.mixer.clipAction(clip);
     this.footstepTimes.walk = computeFootstepTimes(this.model, clips.walk);
     this.footstepTimes.run = computeFootstepTimes(this.model, clips.run);
@@ -232,16 +254,7 @@ export class Player {
 
   /** Crea el soporte del hacha como hijo del hueso de la mano: sigue todas las animaciones. */
   attachAxeSocket() {
-    const bone = this.model.getObjectByName(AXE_SOCKET.bone);
-    if (!bone) throw new Error(`falta el hueso ${AXE_SOCKET.bone} en worker.glb`);
-    const y = AXE_SOCKET.handleDir.clone().normalize();
-    const x = AXE_SOCKET.bladeDir.clone().sub(y.clone().multiplyScalar(AXE_SOCKET.bladeDir.dot(y))).normalize();
-    const z = new THREE.Vector3().crossVectors(x, y);
-    this.axeSocket = new THREE.Object3D();
-    this.axeSocket.name = 'soporte-hacha';
-    this.axeSocket.position.copy(AXE_SOCKET.gripPoint);
-    this.axeSocket.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
-    bone.add(this.axeSocket);
+    this.axeSocket = createAxeSocket(this.model);
   }
 
   /** Coloca en la mano el hacha del nivel indicado (todas comparten el mismo agarre). */

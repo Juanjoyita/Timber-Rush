@@ -96,11 +96,11 @@ export const UPGRADES = {
   },
 };
 
-// Tienda (Fase 8): se abre con B en cualquier lugar. Qué se puede comprar ya y en qué columna
-// de la fila de progreso se guarda cada mejora. Los trabajadores llegan en la Fase 9.
+// Tienda (Fase 8): se abre con B en cualquier lugar. Qué se puede comprar y en qué columna
+// de la fila de progreso se guarda cada mejora. Trabajadores desde la Fase 9.
 export const SHOP = {
   key: 'KeyB',
-  purchasable: ['axe', 'backpack', 'sawmill'],
+  purchasable: ['axe', 'backpack', 'workers', 'sawmill'],
   columns: { axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers' },
 };
 
@@ -124,6 +124,15 @@ export const SALE = {
   // Otra venta durante la celebración: el anuncio acumula el total; suenan Bonus Points y,
   // al terminar éste, Level Up (sin repetir el Chime) y la salida se retrasa.
   mergeTimeline: { levelUp: 0.6, exit: 1.8 },
+};
+
+// ---------- Trabajadores (Fase 9) ----------
+// Producen madera del bosque actual en el almacén del aserradero, separado de la mochila, y
+// SOLO mientras se juega (sin pausa ni tienda abierta). F en la plataforma vende también el almacén.
+export const WORKERS = {
+  interval: 5, // Segundos para que UN trabajador produzca una unidad de madera
+  storageCapacity: 100, // Unidades máximas en el almacén (al llenarse, dejan de producir)
+  saveDelay: 30000, // ms: la producción se guarda como mucho cada 30 s (no en cada unidad)
 };
 
 // Árboles: resistencia, caída, madera y regeneración
@@ -158,6 +167,8 @@ export const AUDIO = {
     tree_falling: { file: 'tree_fall.wav', offset: 0.12, duration: 1.4, volume: 0.9, cooldown: 0.5, maxConcurrent: 2 },
     tree_impact: { file: 'tree_fall.wav', offset: 1.58, duration: 1.05, volume: 1.0, cooldown: 0.3, maxConcurrent: 2 },
     // Capa grave del impacto (el tronco pesado golpea la tierra): suena junto a tree_impact
+    // Hachazo de los trabajadores del aserradero: suave y posicional (se oye al acercarse)
+    worker_chop: { files: ['axe_body_0.wav', 'axe_body_1.wav', 'axe_body_2.wav', 'axe_body_3.wav', 'axe_body_4.wav'], volume: 0.3, cooldown: 0.08, maxConcurrent: 2, pitchVariation: 0.1 },
     ground_thud: { files: ['ground_thud_0.wav', 'ground_thud_1.wav', 'ground_thud_2.wav', 'ground_thud_3.wav', 'ground_thud_4.wav'], volume: 0.85, cooldown: 0.3, maxConcurrent: 2, pitchVariation: 0.08 },
     // Pasos del Worker (posicionales, en sus pies): una variante al azar por paso y ligera
     // variación de tono y de volumen (±15 %) para que no suenen repetitivos. Suaves: se oyen

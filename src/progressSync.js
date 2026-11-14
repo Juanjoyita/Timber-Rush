@@ -4,6 +4,10 @@
 // "progress" del usuario). No conoce el DOM ni las mecánicas de tala: recibe las funciones de la
 // API (appwrite.js) y avisa de su estado con onStatus(estado, detalle).
 //
+// Almacén (Fase 9): resources.storage recibe la madera de los trabajadores (capacidad
+// storageCapacity). Esa producción se guarda de forma diferida (como mucho cada productionDelay
+// ms): un cierre brusco puede perder unos segundos de producción, pero nunca madera ya guardada.
+//
 // Compra (Fase 8): misma maquinaria que la venta. Resta el precio de coins (valor absoluto) y
 // sube la columna del nivel en una sola escritura atómica; nunca toca totalCoinsEarned.
 // onPurchase(compra) se emite una única vez y solo con la compra confirmada.
@@ -63,6 +67,12 @@ export const SYNC_SETTINGS = {
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
 const isCount = (x) => Number.isInteger(x) && x >= 0;
+/** Contenido { recurso: { idBosque: n } } con solo enteros positivos (o vacío). */
+function validContents(c) {
+  if (c === undefined) return true;
+  if (!isPlainObject(c)) return false;
+  return Object.values(c).every((byForest) => isPlainObject(byForest) && Object.values(byForest).every((n) => Number.isInteger(n) && n > 0));
+}
 const pickSaved = (data) => ({ resources: data.resources, totalWoodCollected: data.totalWoodCollected });
 
 /** Suma dos contenidos { recurso: { idBosque: n } }. */
@@ -93,10 +103,13 @@ export class ProgressSync {
    *                probe(userId, currentVersion), classify(error) }
    * @param clock { now(), setTimeout(fn, ms), clearTimeout(id) } (se sustituye en las pruebas)
    */
-  constructor({ api, saleValue = null, purchaseOffer = null, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
+  constructor({ api, saleValue = null, purchaseOffer = null, storageCapacity = 100, productionDelay = 30000, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
     this.api = api;
     this.saleValue = saleValue; // (contenido, nivelAserradero) => { sold, units, coins } (economy.js)
     this.purchaseOffer = purchaseOffer; // (clave, niveles) => { column, level, cost } | { maxed } | null
+    this.storageCapacity = storageCapacity;
+    this.productionDelay = productionDelay;
+    this.onStorageChange = () => {}; // (total) => void — indicador del almacén y pila de troncos
     this.clock = clock;
     this.s = settings;
     this.onStatus = () => {}; // (estado, detalle) => void
@@ -131,12 +144,14 @@ export class ProgressSync {
     this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
     this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
     this.opInFlight = false; // Venta o compra en curso (nunca dos a la vez)
+    this.lazyOnly = false; // Lo único pendiente es producción (guardado diferido)
     this.status = SAVE_STATUS.IDLE;
   }
 
   /** ¿Hay algo que todavía no está confirmado en Appwrite? */
   get hasUnsaved() {
-    return this.attached && (this.dirty || this.inFlight !== null || this.uncertain !== null);
+    // La producción pendiente sola no cuenta (se acepta perder unos segundos al cerrar)
+    return this.attached && ((this.dirty && !this.lazyOnly) || this.inFlight !== null || this.uncertain !== null);
   }
 
   get halted() {
@@ -176,7 +191,7 @@ export class ProgressSync {
     const version = profile.saveVersion ?? 0;
     const coins = profile.coins ?? 0;
     const totalCoins = profile.totalCoinsEarned ?? 0;
-    let damaged = resources === null || !isCount(total) || !isCount(version) || !isCount(coins) || !isCount(totalCoins);
+    let damaged = resources === null || !isCount(total) || !isCount(version) || !isCount(coins) || !isCount(totalCoins) || (resources && !validContents(resources.storage));
 
     this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
     backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
@@ -199,6 +214,7 @@ export class ProgressSync {
       sawmillLevel: profile.sawmillLevel ?? 0,
     };
     this.confirmed = { resources: profile.resources ?? null, totalWoodCollected: profile.totalWoodCollected ?? null };
+    this.onStorageChange(this.storageTotal);
     if (damaged) {
       this.fail(SAVE_STATUS.BLOCKED, 'datos-dañados', null, 'Los datos guardados de la mochila no son válidos: no se sobrescribirán.');
     } else {
@@ -223,6 +239,7 @@ export class ProgressSync {
     }
     if (!isPlainObject(value)) return null;
     if (value.backpack !== undefined && !isPlainObject(value.backpack)) return null;
+    if (value.storage !== undefined && !isPlainObject(value.storage)) return null;
     return { ...DEFAULT_RESOURCES, ...value, backpack: value.backpack ?? {} };
   }
 
@@ -238,11 +255,56 @@ export class ProgressSync {
   /** La mochila cambió (recoger, vaciar, cambiar de nivel). */
   markDirty() {
     if (!this.attached || this.restoring) return;
+    this.lazyOnly = false;
     this.dirty = true;
     this.dirtySince ??= this.clock.now();
     if (this.halted || MANUAL_RETRY.has(this.status)) return; // Se conserva en memoria
     if (this.status !== SAVE_STATUS.SAVING && this.status !== SAVE_STATUS.RETRYING) this.setStatus(SAVE_STATUS.PENDING);
     this.schedule();
+  }
+
+  // ---------- Almacén (Fase 9) ----------
+
+  /** Unidades en el almacén (todas las maderas). */
+  get storageTotal() {
+    let sum = 0;
+    for (const byForest of Object.values(isPlainObject(this.base.storage) ? this.base.storage : {})) {
+      if (isPlainObject(byForest)) for (const n of Object.values(byForest)) if (isCount(n)) sum += n;
+    }
+    return sum;
+  }
+
+  get storageFree() {
+    return Math.max(0, this.storageCapacity - this.storageTotal);
+  }
+
+  /**
+   * Madera producida por los trabajadores. Solo entra lo que cabe. Se guarda de forma diferida.
+   * @returns unidades añadidas
+   */
+  addToStorage(forestId, units) {
+    if (!this.attached || this.halted) return 0;
+    const n = Math.min(Math.max(0, Math.floor(units)), this.storageFree);
+    if (n === 0) return 0;
+    const storage = structuredClone(isPlainObject(this.base.storage) ? this.base.storage : {});
+    const wood = (storage.wood ??= {});
+    wood[forestId] = (wood[forestId] ?? 0) + n;
+    this.base = { ...this.base, storage };
+    this.onStorageChange(this.storageTotal);
+    this.markDirtyLazy();
+    return n;
+  }
+
+  /** Cambio que puede esperar (producción): un guardado como mucho cada productionDelay ms. */
+  markDirtyLazy() {
+    if (!this.attached || this.restoring) return;
+    if (!this.dirty) this.lazyOnly = true;
+    this.dirty = true;
+    if (MANUAL_RETRY.has(this.status) || this.timer || this.retryTimer || this.inFlight) return; // Ya habrá un guardado
+    this.timer = this.clock.setTimeout(() => {
+      this.timer = null;
+      this.flush();
+    }, this.productionDelay);
   }
 
   /** Madera recogida (para totalWoodCollected). */
@@ -402,6 +464,7 @@ export class ProgressSync {
     this.coins = data.coins;
     this.totalCoinsEarned = data.totalCoinsEarned;
     this.base = { ...this.base, storage: sale.storageAfter };
+    this.onStorageChange(this.storageTotal);
     this.restoring = true; // Retirar lo vendido no es un cambio pendiente de guardar
     this.backpack.remove(sale.fromBackpack); // Lo recogido durante la venta se conserva
     this.restoring = false;
@@ -492,6 +555,7 @@ export class ProgressSync {
       const expected = this.version;
       this.dirty = false;
       this.dirtySince = null;
+      this.lazyOnly = false;
       this.setStatus(SAVE_STATUS.SAVING, sale ? (sale.kind === 'purchase' ? 'Comprando…' : 'Vendiendo…') : null);
       let newVersion;
       try {

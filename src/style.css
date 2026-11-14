@@ -452,6 +452,11 @@ kbd {
   font-weight: 700;
 }
 
+/* Almacén lleno: barra dorada y aviso en el texto */
+.storage-hud.is-full .backpack-fill {
+  background: var(--dorado);
+}
+
 /* ===== Anuncio de venta confirmada (Fase 7B) =====
    Tarjeta Low Poly facetada en el centro: dorados, amarillos y verdes. Semitransparente y sin
    recibir el ratón (la cámara, los ataques y Pointer Lock siguen funcionando). */

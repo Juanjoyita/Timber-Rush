@@ -4,6 +4,7 @@
 //         sonidos posicionales y regeneración.
 // FASE 7A: recolección automática de la madera del suelo y mochila.
 // FASE 7B: venta con F en la plataforma del aserradero y celebración (solo tras confirmarla).
+// FASE 9: trabajadores del aserradero: producen madera en el almacén mientras se juega.
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
 import { FORESTS, SALE } from '../config.js';
@@ -16,6 +17,7 @@ import { CameraObstacles, ThirdPersonCamera } from './ThirdPersonCamera.js';
 import { PlaySession } from './session.js';
 import { Backpack } from './backpack.js';
 import { SaleCelebration } from './saleEffects.js';
+import { WorkerCrew, WorkerProduction } from './workers.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -76,6 +78,15 @@ export class Game {
     this.onBackpackChange = () => {};
     this.onBackpackFull = () => {};
     this.onWoodCollected = () => {}; // (unidades) => void — para totalWoodCollected
+
+    // ---------- Trabajadores (Fase 9) ----------
+    // main.js indica cuántos hay (setWorkerCount) y cuánto cabe en el almacén (storageFree), y
+    // recibe lo producido con onWorkersProduce(unidades). Solo producen jugando (sin pausa).
+    this.production = new WorkerProduction();
+    this.workerCount = 0;
+    this.storageFree = () => 0;
+    this.onWorkersProduce = () => {};
+    this.crew = null; // Se crea cuando el modelo del Worker está cargado
     this.backpack = new Backpack(1);
     this.backpack.onChange = (backpack) => this.onBackpackChange(backpack);
 
@@ -201,6 +212,10 @@ export class Game {
     // y más fuerte al correr. El ritmo lo marcan las animaciones Walk / Run.
     this.player.onFootstep = (step) => this.playFootstep(step);
 
+    // Trabajadores visibles en sus puestos del cobertizo (hachazo suave y posicional)
+    this.crew = new WorkerCrew(this.scene, this.player, this.forest.workerSpots, (pos) => this.audio.play('worker_chop', pos));
+    this.crew.setCount(this.workerCount);
+
     // Cámara: obstáculos (terreno, troncos y aserradero; no las hojas) y posición inicial detrás
     this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
     this.cameraRig.placeBehind(this.player.position, yaw);
@@ -226,6 +241,17 @@ export class Game {
   setAxeLevel(level) {
     this.axeLevel = Math.min(3, Math.max(1, Math.floor(level) || 1));
     if (this.player.axeSocket) this.player.equipAxe(this.axeLevel);
+  }
+
+  /** Trabajadores contratados (0..2): los muestra en el aserradero y producen madera. */
+  setWorkerCount(n) {
+    this.workerCount = Math.max(0, Math.min(2, Math.floor(n) || 0));
+    this.crew?.setCount(this.workerCount);
+  }
+
+  /** Pila de troncos del almacén según lo almacenado (0..1). */
+  setStoragePile(fraction) {
+    this.forest?.setLogPile(fraction);
   }
 
   /** Nivel de la mochila del perfil del jugador (1..3). */
@@ -263,6 +289,8 @@ export class Game {
   resetPlayerData() {
     this.backpack.clear();
     this.chopping?.wood.clear();
+    this.setWorkerCount(0);
+    this.production = new WorkerProduction();
   }
 
   /** Botón "Cerrar" de la tienda (Fase 8). */
@@ -314,6 +342,12 @@ export class Game {
       if (collected > 0) this.onWoodCollected(collected);
       this.updateSellZone();
       this.saleCelebration.update(dt);
+      // Trabajadores: producen solo durante la partida (no en el menú, la pausa ni la tienda)
+      if (this.session.active) {
+        const units = this.production.update(dt, this.workerCount, this.storageFree());
+        if (units > 0) this.onWorkersProduce(units);
+        this.crew?.update(dt);
+      }
     }
 
     // Cámara: sigue al personaje, gira con el ratón y evita terreno, troncos y estructuras
