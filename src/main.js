@@ -13,7 +13,7 @@ import { Game } from './game/Game.js';
 import * as api from './appwrite.js';
 import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
-import { forestList, nextUpgrade, productionStats, purchaseOffer, saleValue, shopItems, unlockedForestCount } from './game/economy.js';
+import { chestReward, forestList, nextUpgrade, productionStats, purchaseOffer, saleValue, shopItems, unlockedForestCount } from './game/economy.js';
 import { SaleCelebrationSequence } from './game/saleSequence.js';
 import { forestById, WORKERS } from './config.js';
 import { Settings } from './settings.js';
@@ -42,6 +42,7 @@ const sync = new ProgressSync({
   saleValue,
   purchaseOffer,
   forestUnlocks: unlockedForestCount, // Bosques desbloqueados por monedas históricas (Fase 11A)
+  chestReward, // Recompensa determinista de cada cofre (Fase 11C)
   storageCapacity: WORKERS.storageCapacity,
   productionDelay: WORKERS.saveDelay, // La producción se guarda como mucho cada 30 s
 });
@@ -212,6 +213,79 @@ game.onSleepRequest = async () => {
   }
 };
 
+// ---------- Cofres y tesoros (Fase 11C) ----------
+// Abrir = una escritura versionada (monedas + cofre abierto). El oro, la tapa abierta y la
+// celebración solo llegan con la confirmación de Appwrite (onChest). La partida NO se detiene.
+game.chestsOpened = (forestId, day) => sync.openedChests(forestId, day);
+game.onChestPromptChange = ui.showChestPrompt;
+const CHEST_MESSAGES = {
+  'ya-abierto': 'Este cofre ya está vacío. Vuelve mañana.',
+  'en-curso': 'Espera un momento: hay otra operación en curso.',
+  'otro-bosque': 'Este cofre es de otro bosque.',
+  [SAVE_STATUS.CONFLICT]: 'No se pudo abrir: tu progreso cambió en otra sesión. Recarga la página.',
+  [SAVE_STATUS.CONDITION]: 'No se pudo abrir: el guardado está desactivado.',
+  [SAVE_STATUS.BLOCKED]: 'No se pudo abrir: los datos guardados no son válidos.',
+};
+let chestBusy = false;
+const celebrated = new Set(); // Cofres ya celebrados al abrirlos (no se repite al confirmar)
+const CHEST_SOUNDS = { comun: 'chest_coins_small', raro: 'chest_coins', legendario: 'chest_treasure' };
+game.onChestRequest = async ({ forestId, slot, day, kind }) => {
+  if (chestBusy) return; // Pulsar E varias veces no abre (ni cobra) dos veces
+  chestBusy = true;
+  // Respuesta inmediata: tapa y cerradura ya; a los 0,25 s, monedas, su sonido y el anuncio con la
+  // cantidad (es fija: se conoce antes de guardar). El SALDO solo cambia con la confirmación.
+  game.setChestPending(slot, true);
+  const key = `${forestId}:${day}:${slot}`;
+  const reward = chestReward(forestId, day, slot);
+  const preview = setTimeout(() => {
+    celebrated.add(key);
+    game.chestBurst(slot, kind);
+    game.audio.playUi(CHEST_SOUNDS[kind] ?? 'chest_coins');
+    ui.chestBanner.show({ kind, earned: reward?.coins ?? 0, pending: true });
+  }, 250);
+  let result = { ok: false, status: 'error' };
+  try {
+    sync.setClock(game.clock.toJSON()); // El día exacto del cofre
+    result = await sync.openChest(forestId, slot);
+    if (!result.ok && result.reason !== undefined) {
+      ui.showSaleMessage(CHEST_MESSAGES[result.reason] ?? `No se pudo abrir el cofre (${result.reason ?? result.status}). Sigue cerrado.`);
+    } else if (!result.ok && !result.pending) {
+      ui.showSaleMessage(`No se pudo abrir el cofre (${result.status}). Sigue cerrado.`);
+    }
+  } finally {
+    // Si Appwrite respondió antes de los 0,25 s, onChest ya lo celebró: no se repite
+    clearTimeout(preview);
+    // Respuesta perdida (pending): se sabrá al verificar; mientras tanto, la tapa vuelve a cerrarse
+    if (!result.ok) {
+      if (celebrated.delete(key)) ui.chestBanner.fail(); // El anuncio pasa a "no se guardó"
+      game.chestFailed(slot);
+    }
+    game.setChestPending(slot, false);
+    chestBusy = false;
+  }
+};
+sync.onChest = (chest) => {
+  // Confirmado en Appwrite. Si ya se celebró al abrirlo, solo se actualiza el saldo; si la
+  // confirmación llega más tarde (respuesta perdida y verificada), se celebra ahora.
+  const key = `${chest.forestId}:${chest.day}:${chest.slot}`;
+  const already = celebrated.delete(key);
+  game.chestOpened(chest, { celebrate: !already });
+  if (already) ui.chestBanner.confirm();
+  else {
+    ui.chestBanner.show(chest);
+    game.audio.playUi(CHEST_SOUNDS[chest.kind] ?? 'chest_coins');
+  }
+  ui.coinCounter.animateTo(chest.coins);
+  ui.renderUpgradeProgress(nextUpgrade(sync.levels), chest.coins);
+  ui.updateMenuCoins(chest.coins, chest.totalCoinsEarned);
+  if (chest.unlockedForests?.length) {
+    const names = chest.unlockedForests.map((id) => forestById(id).name).join(', ');
+    ui.showSaleMessage(`¡Nuevo bosque desbloqueado: ${names}! Viaja desde el poste del campamento (E).`);
+    ui.renderMenu({ coins: sync.coins, totalCoinsEarned: sync.totalCoinsEarned, unlockedForests: sync.forests.unlockedForests });
+  }
+};
+sync.onChestFailed = ({ reason }) => ui.showSaleMessage(`No se pudo guardar el cofre (${reason}). Sigue cerrado.`);
+
 // ---------- Tienda (Fase 8) ----------
 // Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
 // Comprar no cambia nada en el juego hasta que Appwrite confirma la compra (onPurchase).
@@ -327,6 +401,8 @@ function applyProgressToGame() {
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
   game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
   game.setClock(sync.gameClock); // Día y hora guardados (Fase 11B)
+  game.refreshChests(); // Cofres del día con los ya abiertos (Fase 11C)
+  sync.warmUp(); // Comprobación de seguridad de la sesión ya, no en la primera operación
   // Bosque guardado (Fase 11A): se construye en segundo plano; Continuar espera a que esté listo
   game.setForest(sync.forests.currentForest).then(() => ui.setForestHud(forestById(game.forestId).name), () => {});
   renderStorage();

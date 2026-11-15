@@ -135,6 +135,7 @@ export function renderStats(st) {
   $('st-storage').textContent = `${formatNumber(st.storage)} / ${formatNumber(st.storageCapacity)}`;
   $('st-forests').textContent = `${st.currentForestName ?? st.currentForest} · ${st.unlockedForests}/5 desbloqueados`;
   $('st-clock').textContent = st.clockText ?? `Día ${st.gameClock?.d ?? 1}`;
+  $('st-chests').textContent = formatNumber(st.chestsOpened ?? 0);
 }
 
 /** Controles de configuración con los valores actuales. */
@@ -608,6 +609,49 @@ export function showSleep(on) {
 export function showSleepDay(text) {
   $('sleep-text').textContent = `Amanece · ${text}`;
 }
+
+// ---------- Cofres (Fase 11C) ----------
+
+/** Aviso junto a un cofre: null (lejos), 'closed' (se puede abrir) u 'opened' (vacío). */
+export function showChestPrompt(state) {
+  const el = $('chest-prompt');
+  el.classList.toggle('hidden', !state);
+  if (state === 'closed') el.innerHTML = '<kbd>E</kbd> Abrir cofre';
+  if (state === 'opened') el.textContent = 'Cofre vacío · vuelve mañana';
+}
+
+const CHEST_TITLES = { comun: 'Cofre común', raro: '¡Cofre raro!', legendario: '¡TESORO LEGENDARIO!' };
+let chestBannerTimer = null;
+/** Anuncio del cofre (arriba, sin tapar el centro ni bloquear el juego). Más vistoso si es legendario. */
+export const chestBanner = {
+  /** pending: se muestra al abrir, antes de que Appwrite confirme (el saldo aún no cambia). */
+  show({ kind, earned, pending = false }) {
+    const el = $('chest-banner');
+    clearTimeout(chestBannerTimer);
+    el.className = `chest-banner is-${kind}`;
+    el.dataset.kind = kind;
+    $('chest-banner-title').textContent = CHEST_TITLES[kind] ?? 'Cofre';
+    $('chest-banner-amount').textContent = `+${formatNumber(earned)}`;
+    restartClass(el, 'is-entering');
+    // Si aún se espera la confirmación, se mantiene hasta confirm()/fail() (con un límite)
+    chestBannerTimer = setTimeout(() => el.classList.add('hidden'), pending ? 8000 : kind === 'legendario' ? 3400 : 2400);
+  },
+  /** Confirmado: el anuncio sigue su tiempo normal. */
+  confirm() {
+    const el = $('chest-banner');
+    clearTimeout(chestBannerTimer);
+    chestBannerTimer = setTimeout(() => el.classList.add('hidden'), el.dataset.kind === 'legendario' ? 2800 : 1800);
+  },
+  /** No se pudo guardar: el anuncio lo dice y desaparece. */
+  fail() {
+    const el = $('chest-banner');
+    clearTimeout(chestBannerTimer);
+    el.className = 'chest-banner is-error';
+    $('chest-banner-title').textContent = 'No se guardó';
+    $('chest-banner-amount').textContent = 'El cofre sigue cerrado';
+    chestBannerTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+  },
+};
 
 // ---------- Eventos ----------
 /**

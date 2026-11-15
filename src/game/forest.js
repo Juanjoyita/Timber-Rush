@@ -17,7 +17,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { allFootprints, MAX_SAWMILL_LEVEL, stageColliders } from './sawmillStages.js';
 import { applyForestTheme, createExtraKinds } from './forestThemes.js';
 import { createLandmark, landmarkShape } from './landmarks.js';
-import { REST, TRAVEL } from '../config.js';
+import { CHESTS, REST, TRAVEL } from '../config.js';
 import { createRestSpot } from './restSpot.js';
 
 const MODEL_PATH = '/assets/models/';
@@ -980,6 +980,54 @@ function isChoppable(tree, canReach) {
   return false;
 }
 
+// ---------- Cofres (Fase 11C) ----------
+
+/**
+ * 16 puntos posibles por bosque para los cofres: a más de 3 m de los caminos, lejos del
+ * campamento, la tienda y el inicio, fuera del agua y del elemento emblemático, sin árboles,
+ * rocas ni troncos cerca, separados entre sí y a los que se llega caminando. Si el bosque tiene
+ * elemento emblemático, 3 de ellos están en sus alrededores (para el cofre especial).
+ */
+function createChestSpots(config, { obstacles, landmarkColliders, canReach }) {
+  const rand = createRandom(config.seed + 31);
+  const H = WORLD.playHalf - 5;
+  const spots = [];
+  const lm = landmark;
+  // Árboles, rocas y troncos caídos: la rejilla espacial del bosque (solo las celdas vecinas)
+  const free = (x, z) =>
+    obstacles.isFree(x, z, 0, 1.3) &&
+    landmarkColliders.spheres.every((c) => Math.hypot(c.x - x, c.z - z) > c.r + 1.0) &&
+    landmarkColliders.boxes.every((c) => Math.hypot(c.x - x, c.z - z) > Math.max(c.hx, c.hz) + 1.0);
+  const valid = (x, z) =>
+    Math.abs(x) < H && Math.abs(z) < H &&
+    distanceToRect(x, z, SAWMILL_EXPANSION) >= CHESTS.minFromCamp &&
+    distanceToRect(x, z, REST_FOOTPRINT) >= CHESTS.minFromCamp &&
+    Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) >= CHESTS.minFromSpawn &&
+    Math.hypot(x - TRAVEL.post.x, z - TRAVEL.post.z) >= CHESTS.minFromCamp &&
+    distanceToPaths(x, z) >= CHESTS.minFromPath &&
+    (!lm || Math.hypot(x - lm.x, z - lm.z) >= lm.clear + 1.5) && // Ni en el agua ni dentro del árbol o las ruinas
+    spots.every((s) => Math.hypot(s.x - x, s.z - z) >= CHESTS.candidateSpacing) &&
+    free(x, z) &&
+    canReach(x, z) && [[1.6, 0], [-1.6, 0], [0, 1.6], [0, -1.6]].some(([dx, dz]) => canReach(x + dx, z + dz));
+  const add = (x, z, nearLandmark) => spots.push({ i: spots.length, x, z, y: heightAt(x, z), yaw: rand() * Math.PI * 2, nearLandmark });
+  // Alrededores del elemento emblemático (lo justo fuera de su zona)
+  if (lm) {
+    for (let attempt = 0, n = 0; n < 3 && attempt < 400; attempt++) {
+      const a = rand() * Math.PI * 2, d = lm.clear + 1.5 + rand() * 4.5;
+      const x = lm.x + Math.cos(a) * d, z = lm.z + Math.sin(a) * d;
+      if (valid(x, z)) {
+        add(x, z, true);
+        n++;
+      }
+    }
+  }
+  for (let attempt = 0; spots.length < CHESTS.candidates && attempt < 6000; attempt++) {
+    const x = range(rand, -H, H), z = range(rand, -H, H);
+    if (valid(x, z)) add(x, z, false);
+  }
+  return spots;
+}
+
 // ---------- Poste indicador (Fase 11A) ----------
 
 /** Poste con flechas que señala los otros bosques. Devuelve { group, collider }. */
@@ -1277,6 +1325,10 @@ export function createForest(config, geometries) {
   }
   group.add(...instancedByModel(plants, geometries, mats.nature, { cast: false, receive: true }));
 
+  // --- Puntos posibles para los cofres (Fase 11C): libres, alcanzables y lejos del campamento ---
+  // Solo se LEE el bosque (no se mueve nada). Semilla propia.
+  const chestSpots = createChestSpots(config, { obstacles, landmarkColliders, canReach });
+
   // --- Elementos propios del bosque (Fase 11A): hojas caídas, nieve, setas, cristales ---
   // Semilla propia: no cambia nada de lo anterior. Sin colisión (como la hierba).
   const extraRand = createRandom(config.seed + 3);
@@ -1324,6 +1376,7 @@ export function createForest(config, geometries) {
     cameraBoxes: [...sawmill.cameraBoxes, ...(emblem?.cameraBoxes ?? [])], // Cajas que la cámara no atraviesa (aserradero, tejado y árbol emblemático)
     landmark: config.landmark ?? null,
     restSpot: rest, // Tienda para dormir (Fase 11B): colisión, zona de uso, hoguera y su luz
+    chestSpots, // Puntos posibles de los cofres (Fase 11C): cada día se usan 4
     lanternLight: sawmill.lanternLight, // Farol de la plataforma (más intenso de noche)
     landmarkColliders, // Colisiones del elemento emblemático (esferas y cajas orientadas)
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)

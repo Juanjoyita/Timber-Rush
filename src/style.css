@@ -1260,3 +1260,101 @@ kbd {
     transition-duration: 0.05s;
   }
 }
+
+/* ---------- Cofres (Fase 11C) ---------- */
+
+/* Anuncio del cofre: arriba al centro, compacto (la venta usa el anuncio grande central) */
+.chest-banner {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px 10px 14px;
+  clip-path: polygon(0 12%, 4% 0, 100% 0, 100% 88%, 96% 100%, 0 100%);
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.1) 0 35%, transparent 35%), rgba(47, 74, 44, 0.92);
+  border-bottom: 3px solid #b88a55;
+  color: var(--crema);
+  pointer-events: none;
+}
+
+.chest-banner.is-raro {
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.12) 0 35%, transparent 35%), rgba(32, 52, 88, 0.94);
+  border-bottom-color: #7fc4ff;
+}
+
+.chest-banner.is-legendario {
+  top: 56px;
+  padding: 14px 28px 14px 18px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.18) 0 35%, transparent 35%), rgba(92, 52, 12, 0.95);
+  border-bottom-color: var(--dorado);
+  box-shadow: 0 0 30px rgba(242, 207, 91, 0.55);
+}
+
+.chest-icon {
+  width: 36px;
+  height: 36px;
+}
+
+.chest-banner.is-legendario .chest-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.chest-title {
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.chest-banner.is-legendario .chest-title {
+  font-size: 1.25rem;
+  color: #ffe27a;
+}
+
+.chest-amount {
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--dorado);
+  font-variant-numeric: tabular-nums;
+}
+
+.chest-banner.is-legendario .chest-amount {
+  font-size: 1.8rem;
+}
+
+.chest-banner.is-entering {
+  animation: chest-in 0.5s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+.chest-banner.is-legendario.is-entering {
+  animation: chest-in 0.5s cubic-bezier(0.2, 1.4, 0.4, 1), chest-glow 1.2s ease-in-out 0.5s 2;
+}
+
+.chest-banner.is-error {
+  background: rgba(88, 32, 28, 0.94);
+  border-bottom-color: #f0a08f;
+}
+
+.chest-banner.is-error .chest-amount {
+  font-size: 1rem;
+  color: #f4ddd6;
+}
+
+@keyframes chest-in {
+  from { opacity: 0; transform: translate(-50%, -14px) scale(0.9); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes chest-glow {
+  50% { box-shadow: 0 0 46px rgba(255, 226, 122, 0.85); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chest-banner.is-entering,
+  .chest-banner.is-legendario.is-entering {
+    animation: none;
+  }
+}

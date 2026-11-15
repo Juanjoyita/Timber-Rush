@@ -16,7 +16,7 @@
 //          cámara en tercera persona. En el menú NO se simula nada del gameplay.
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
-import { DAY_NIGHT, forestById, FORESTS, SALE } from '../config.js';
+import { CHESTS, DAY_NIGHT, forestById, FORESTS, SALE } from '../config.js';
 import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, surfaceAt, WORLD } from './forest.js';
 import { createPhysics, FIXED_STEP, PLAYER_RADIUS } from './physics.js';
 import { Player } from './Player.js';
@@ -32,6 +32,7 @@ import { clampLevel, loadSawmillModels, SawmillStages } from './sawmillStages.js
 import { ForestAmbience } from './forestAmbience.js';
 import { GameClock, START_CLOCK } from './gameClock.js';
 import { lightingAt, NightSky } from './dayNight.js';
+import { ChestField } from './chests.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -80,6 +81,16 @@ export class Game {
     this.restPrompt = null;
     this.clockSyncTime = 0;
     this.clockText = '';
+
+    // ---------- Cofres (Fase 11C) ----------
+    // main.js indica qué cofres están abiertos hoy (chestsOpened, de lo guardado en Appwrite) y
+    // abre/cobra con onChestRequest. Aquí solo se dibujan, se animan y se detectan con E.
+    this.chestField = null;
+    this.chestsOpened = () => 0; // (bosque, día) => máscara de huecos abiertos
+    this.onChestPromptChange = () => {}; // (null | 'closed' | 'opened')
+    this.onChestRequest = () => {}; // ({ forestId, slot, day, kind, position }) => void
+    this.chestPrompt = null;
+    this.clock.onNewDay(() => this.refreshChests()); // A las 06:00: los cofres del nuevo día
 
     // ---------- Escena ----------
     // THREE.Scene es el contenedor de todos los objetos, luces y cámara.
@@ -328,6 +339,11 @@ export class Game {
     this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
     this.cameraRig.placeBehind(this.player.position, yaw);
 
+    // Cofres del día en este bosque
+    this.chestField = new ChestField({ forestId: config.id, spots: this.forest.chestSpots ?? [], material: this.forest.materials.nature, physics: this.physics });
+    this.scene.add(this.chestField.group);
+    this.refreshChests();
+
     this.applyForestLook(config, { lightsOnly: Boolean(this.travelFx) }); // Viajando: las nubes siguen tapando
     this.ambience = new ForestAmbience(config.theme?.particles ?? null, config.seed);
     if (this.ambience.points) this.scene.add(this.ambience.points);
@@ -361,9 +377,52 @@ export class Game {
 
   /** Reloj guardado (al cargar, restaurar, reiniciar o tras dormir). No genera nada. */
   setClock(state) {
+    const day = this.clock.day;
     this.clock.set(state);
     this.clockText = '';
+    if (this.clock.day !== day || !this.chestField?.day) this.refreshChests(); // Otro día: otros cofres
     this.updateDayNight(0);
+  }
+
+  // ---------- Cofres (Fase 11C) ----------
+
+  /** Cofres del día actual en el bosque actual (con los ya abiertos hoy, según lo guardado). */
+  refreshChests() {
+    if (!this.chestField || !this.clock) return;
+    const day = this.clock.day;
+    this.chestField.setDay(day, this.chestsOpened?.(this.forestId, day) ?? 0, this.player.body ? this.player.position : null);
+  }
+
+  /** E en un cofre: la tapa se abre ya (con su sonido); el saldo espera a la confirmación. */
+  setChestPending(slot, pending) {
+    this.chestField?.setPending(slot, pending);
+    const c = pending ? this.chestField?.today.find((x) => x.slot === slot) : null;
+    if (c) this.audio?.play('chest_open', new THREE.Vector3(c.spot.x, c.spot.y + 0.5, c.spot.z));
+  }
+
+  /** Monedas 3D saltando del cofre (solo visual): más ráfagas cuanto más raro. */
+  chestBurst(slot, kind) {
+    const c = this.chestField?.today.find((x) => x.slot === slot);
+    if (!c) return;
+    const origin = new THREE.Vector3(c.spot.x, c.spot.y + 0.6, c.spot.z);
+    const bursts = { comun: 1, raro: 2, legendario: 4 }[kind] ?? 1;
+    for (let i = 0; i < bursts; i++) setTimeout(() => this.saleCelebration.burst(origin), i * 180);
+  }
+
+  /** No se pudo guardar: la tapa se cierra y el cofre sigue disponible. */
+  chestFailed(slot) {
+    this.chestField?.revert(slot);
+  }
+
+  /**
+   * Cofre abierto y cobrado (confirmado): se abre la tapa y saltan monedas. Solo visual.
+   * @param chest { forestId, day, slot, kind, opened (máscara) }
+   */
+  chestOpened(chest, { celebrate = true } = {}) {
+    const field = this.chestField;
+    if (!field || chest.forestId !== this.forestId || chest.day !== field.day) return;
+    field.setOpened(chest.opened);
+    if (celebrate) this.chestBurst(chest.slot, chest.kind); // Si ya se celebró al abrir, no se repite
   }
 
   /**
@@ -417,10 +476,20 @@ export class Game {
     const post = this.forest?.travelPost;
     const dPost = post ? Math.hypot(p.x - post.x, p.z - post.z) - post.radius : Infinity;
     const dRest = this.clock ? this.restDistance() - REST_REACH : Infinity;
+    const near = this.chestField?.nearest(p);
+    const dChest = near ? near.distance - CHESTS.reach : Infinity;
     this.nearTravelPost = dPost <= 0;
     this.nearRest = dRest <= 0;
-    const target = this.nearRest && (!this.nearTravelPost || dRest < dPost) ? 'rest' : this.nearTravelPost ? 'travel' : null;
+    this.nearChest = dChest <= 0 ? near.chest : null;
+    // La interacción disponible más cercana
+    const options = [['travel', dPost], ['rest', dRest], ['chest', dChest]].filter(([, d]) => d <= 0).sort((a, b) => a[1] - b[1]);
+    const target = options[0]?.[0] ?? null;
     this.interactionTarget = target;
+    const chestState = target === 'chest' ? (this.nearChest.opened ? 'opened' : 'closed') : null;
+    if (chestState !== this.chestPrompt) {
+      this.chestPrompt = chestState;
+      this.onChestPromptChange?.(chestState);
+    }
     const travelOn = target === 'travel';
     if (travelOn !== Boolean(this.travelPromptOn)) {
       this.travelPromptOn = travelOn;
@@ -435,6 +504,14 @@ export class Game {
 
   updateRestSpot() {
     this.updateInteractions();
+  }
+
+  /** E junto a un cofre cerrado: main.js lo abre y lo cobra con Appwrite. */
+  requestChest() {
+    const c = this.nearChest;
+    if (!this.session.active || !c || c.opened || c.pending) return false;
+    this.onChestRequest({ forestId: this.forestId, slot: c.slot, day: this.chestField.day, kind: c.kind, position: { x: c.spot.x, y: c.spot.y, z: c.spot.z } });
+    return true;
   }
 
   /** E junto a la tienda: de noche pide dormir (main.js lo guarda); de día se informa. */
@@ -457,6 +534,10 @@ export class Game {
     this.forestStates.set(this.forestId, this.chopping.snapshot());
     this.chopping.dispose();
     this.sawmillStages.dispose();
+    this.chestField?.dispose();
+    this.chestField = null;
+    if (this.chestPrompt) this.onChestPromptChange?.(null);
+    this.chestPrompt = null;
     this.ambience?.dispose();
     this.scene.remove(this.forest.group);
     this.forest.dispose();
@@ -633,6 +714,7 @@ export class Game {
     if (!this.session.active) return false;
     this.updateInteractions(); // Poste y tienda comparten la E: se usa el del aviso visible
     if (this.interactionTarget === 'rest') return this.requestSleep();
+    if (this.interactionTarget === 'chest') return this.requestChest();
     if (this.interactionTarget === 'travel') return this.session.openTravel();
     return false;
   }
@@ -852,6 +934,8 @@ export class Game {
 
     // Luz de la hora actual (Fase 11B)
     this.updateDayNight(dt);
+    // Cofres: tapas, destellos y los que esperaban a que el Worker se alejara (Fase 11C)
+    if (this.chestField && this.player.body) this.chestField.update(dt, this.player.position, this.lighting?.night ?? 0);
 
     // Los árboles con la cámara dentro de su copa se ocultan (si no, se ven "cortados")
     if (this.forest) this.forest.updateCameraOcclusion(this.camera.position);

@@ -5,7 +5,7 @@
 // - Tienda (Fase 8): ofertas de cada mejora (nivel actual, siguiente, precio y efecto).
 // - Producción de los trabajadores según el nivel del aserradero (ritmo y lotes).
 // Regla: los niveles solo cambian con una compra explícita confirmada (progressSync.buy).
-import { BACKPACK, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
+import { BACKPACK, CHESTS, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
 import { RESOURCE } from './backpack.js';
 import { AXE_LEVELS } from './axes.js';
 
@@ -26,6 +26,48 @@ export function productionStats(level = 0, interval = WORKERS.interval) {
   const rate = (1 + (WORKERS.productionBonusPerLevel ?? 0) * L) / interval; // Unidades/s por trabajador
   const batch = (WORKERS.batches ?? []).find((b) => L >= b.fromLevel)?.size ?? 1;
   return { level: L, rate, batch, cycle: batch / rate, perMinute: rate * 60 };
+}
+
+// ---------- Cofres (Fase 11C) ----------
+
+/** Número pseudoaleatorio 0..1 a partir de enteros (determinista: mismo cofre, mismo valor). */
+export function hash01(...ints) {
+  let h = 0x811c9dc5;
+  for (const n of ints) {
+    h ^= (n | 0) + 0x9e3779b9 + (h << 6) + (h >>> 2);
+    h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    h ^= h >>> 16;
+  }
+  return (h >>> 0) / 4294967296;
+}
+
+/** Tipo del cofre de un hueco (0-1 comunes, 2 raro, 3 especial: legendario el 25 % de los días). */
+export function chestKind(forestId, day, slot) {
+  if (slot < 2) return 'comun';
+  if (slot === 2) return 'raro';
+  return hash01(forestId, day, 3, 7) < CHESTS.legendaryChance ? 'legendario' : 'raro';
+}
+
+/**
+ * Monedas de un cofre: base = precio de la madera del bosque × 15; común ×1 (±20 %), raro ×3,
+ * legendario ×8. Entero y siempre el mismo para el mismo bosque, día y hueco (recargar o
+ * reintentar no cambia nada). El aserradero NO se aplica: es una fuente de ingreso aparte.
+ */
+export function chestReward(forestId, day, slot) {
+  const forest = FORESTS.find((f) => f.id === Number(forestId));
+  if (!forest || !Number.isInteger(day) || day < 1 || !Number.isInteger(slot) || slot < 0 || slot >= CHESTS.perDay) return null;
+  const kind = chestKind(forest.id, day, slot);
+  const base = forest.valuePerUnit * CHESTS.baseFactor;
+  const variation = kind === 'comun' ? 1 + (hash01(forest.id, day, slot, 11) * 2 - 1) * CHESTS.commonVariation : 1;
+  return { kind, coins: Math.round(base * CHESTS.multipliers[kind] * variation) };
+}
+
+/** Monedas esperadas al día en un bosque si se encuentran sus 4 cofres. */
+export function expectedChestCoinsPerDay(forestId) {
+  const forest = FORESTS.find((f) => f.id === Number(forestId));
+  const B = forest.valuePerUnit * CHESTS.baseFactor, m = CHESTS.multipliers, p = CHESTS.legendaryChance;
+  return 2 * B * m.comun + B * m.raro + B * (p * m.legendario + (1 - p) * m.raro);
 }
 
 // ---------- Bosques (Fase 11A) ----------

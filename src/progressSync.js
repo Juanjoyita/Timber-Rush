@@ -74,6 +74,19 @@ import { isNightAt, parseClock, START_CLOCK } from './game/gameClock.js';
 
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
 const FOREST_COUNT = 5; // Bosques del juego (columnas currentForest y unlockedForests: 1..5)
+
+/**
+ * Cofres (Fase 11C) dentro de resources: { d: día, o: [máscara de huecos abiertos por bosque],
+ * n: total histórico }. Si d no es el día actual, hoy no hay ninguno abierto.
+ */
+export function parseChests(raw) {
+  if (!isPlainObject(raw)) return null;
+  const { d, o, n } = raw;
+  if (!Number.isInteger(d) || d < 0 || d > 1e6 || !Number.isInteger(n) || n < 0) return null;
+  if (!Array.isArray(o) || o.length !== FOREST_COUNT || !o.every((m) => Number.isInteger(m) && m >= 0 && m <= 15)) return null;
+  return { d, o: [...o], n };
+}
+const NO_CHESTS = Object.freeze({ d: 0, o: [0, 0, 0, 0, 0], n: 0 });
 /** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
 export const INITIAL_PROGRESS = { resources: { backpack: {}, storage: {} } };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -114,13 +127,14 @@ export class ProgressSync {
    *                probe(userId, currentVersion), classify(error) }
    * @param clock { now(), setTimeout(fn, ms), clearTimeout(id) } (se sustituye en las pruebas)
    */
-  constructor({ api, saleValue = null, purchaseOffer = null, forestUnlocks = null, storageCapacity = 100, productionDelay = 30000, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
+  constructor({ api, saleValue = null, purchaseOffer = null, forestUnlocks = null, chestReward = null, storageCapacity = 100, productionDelay = 30000, clock = { now: () => Date.now(), setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (id) => clearTimeout(id) }, settings = SYNC_SETTINGS }) {
     this.api = api;
     this.saleValue = saleValue; // (contenido, nivelAserradero) => { sold, units, coins } (economy.js)
     this.purchaseOffer = purchaseOffer; // (clave, niveles) => { column, level, cost } | { maxed } | null
     // (monedas históricas) => bosques desbloqueados 1..5 (economy.unlockedForestCount). Sin ella,
     // solo cuenta lo guardado en la columna unlockedForests.
     this.forestUnlocks = forestUnlocks;
+    this.chestReward = chestReward; // (bosque, día, hueco) => { kind, coins } (economy.chestReward)
     this.storageCapacity = storageCapacity;
     this.productionDelay = productionDelay;
     this.onStorageChange = () => {}; // (total) => void — indicador del almacén y pila de troncos
@@ -137,6 +151,8 @@ export class ProgressSync {
     this.onTravelFailed = () => {}; // ({ forestId, reason }) => void (solo resultados diferidos)
     this.onSleep = () => {}; // ({ clock }) => void — descanso confirmado en Appwrite (Fase 11B)
     this.onSleepFailed = () => {}; // ({ reason }) => void (solo resultados diferidos)
+    this.onChest = () => {}; // (cofre abierto y cobrado en Appwrite) => void — una sola vez (Fase 11C)
+    this.onChestFailed = () => {}; // ({ reason }) => void (solo resultados diferidos)
     this.saleSeq = 0; // Identificador de cada operación (no se reinicia al cambiar de cuenta)
     this.reset();
   }
@@ -217,6 +233,7 @@ export class ProgressSync {
     // Reloj (Fase 11B): si falta (perfil antiguo) se empieza en el Día 1 a las 08:00; si está
     // dañado, se protege como el resto de datos (no se sobrescribe)
     if (resources && resources.clock !== undefined && !parseClock(resources.clock)) damaged = true;
+    if (resources && resources.chests !== undefined && !parseChests(resources.chests)) damaged = true; // Cofres (Fase 11C)
 
     this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
     backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
@@ -373,6 +390,19 @@ export class ProgressSync {
    * otra vez. Nunca hay dos escrituras en paralelo.
    * @returns { ok, status } ok = todo lo local está confirmado en Appwrite
    */
+  /**
+   * Prepara la sesión en segundo plano (al iniciar sesión): hace YA la comprobación de la
+   * condición de saveVersion que, si no, pagaría la primera operación (abrir un cofre, vender…).
+   * Va por la misma cola de escrituras (nunca en paralelo con otra) y no escribe datos.
+   */
+  warmUp() {
+    if (!this.attached || this.guardChecked || this.inFlight || this.opInFlight || this.halted) return Promise.resolve({ ok: true, status: this.status });
+    this.inFlight = this.write('save').finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
+
   async flush() {
     if (this.timer) {
       this.clock.clearTimeout(this.timer);
@@ -448,6 +478,65 @@ export class ProgressSync {
   applySleep(op) {
     this.base = { ...this.base, clock: op.clock };
     this.onSleep({ id: op.id, clock: { ...op.clock } });
+  }
+
+  // ---------- Cofres (Fase 11C) ----------
+
+  /** Estado guardado de los cofres. */
+  get chests() {
+    return parseChests(this.base.chests) ?? { ...NO_CHESTS, o: [...NO_CHESTS.o] };
+  }
+
+  /** Huecos ya abiertos HOY en un bosque (máscara de 4 bits). */
+  openedChests(forestId, day = this.gameClock.d) {
+    const c = this.chests;
+    return c.d === day ? c.o[forestId - 1] ?? 0 : 0;
+  }
+
+  /**
+   * Abrir un cofre: monedas (coins y totalCoinsEarned, sin el aserradero), desbloqueos de
+   * bosques y el cofre marcado como abierto, todo en UNA escritura versionada y atómica. Si
+   * falla, el cofre no cuenta como abierto. Nunca se cobra dos veces el mismo hueco en un día.
+   */
+  openChest(forestId, slot) {
+    return this.runOperation('chest', { forestId, slot });
+  }
+
+  planChest({ forestId, slot }) {
+    const id = Number(forestId);
+    if (id !== this.forests.currentForest) return { error: 'otro-bosque' };
+    const day = this.gameClock.d;
+    const reward = this.chestReward?.(id, day, slot);
+    if (!reward) return { error: 'no-existe' };
+    const now = this.chests;
+    const masks = now.d === day ? [...now.o] : [0, 0, 0, 0, 0];
+    if (masks[id - 1] & (1 << slot)) return { error: 'ya-abierto' };
+    masks[id - 1] |= 1 << slot;
+    const chests = { d: day, o: masks, n: now.n + 1 };
+    const data = {
+      resources: JSON.stringify({ ...this.base, chests, backpack: this.backpack.toJSON() }),
+      totalWoodCollected: this.totalWood, // La madera no cambia
+      coins: this.coins + reward.coins,
+      totalCoinsEarned: this.totalCoinsEarned + reward.coins,
+    };
+    const unlockedAfter = Math.max(this.forests.unlockedForests, this.unlocksFor(data.totalCoinsEarned));
+    if (unlockedAfter !== this.savedForests.unlockedForests) data.unlockedForests = unlockedAfter;
+    return { data, op: { kind: 'chest', id: ++this.saleSeq, forestId: id, slot, day, reward, chests, unlockedBefore: this.forests.unlockedForests, done: false } };
+  }
+
+  applyChest(op, data) {
+    const before = this.coins;
+    this.coins = data.coins;
+    this.totalCoinsEarned = data.totalCoinsEarned;
+    this.base = { ...this.base, chests: op.chests };
+    const unlockedNow = [];
+    if (data.unlockedForests !== undefined) {
+      this.savedForests = { ...this.savedForests, unlockedForests: data.unlockedForests };
+      const from = Math.min(op.unlockedBefore, this.forests.unlockedForests);
+      this.forests = { ...this.forests, unlockedForests: Math.max(this.forests.unlockedForests, data.unlockedForests) };
+      for (let f = from + 1; f <= this.forests.unlockedForests; f++) unlockedNow.push(f);
+    }
+    this.onChest({ id: op.id, forestId: op.forestId, slot: op.slot, day: op.day, kind: op.reward.kind, earned: op.reward.coins, coinsBefore: before, coins: this.coins, totalCoinsEarned: this.totalCoinsEarned, opened: op.chests.o[op.forestId - 1], unlockedForests: unlockedNow });
   }
 
   // ---------- Bosques (Fase 11A) ----------
@@ -583,6 +672,7 @@ export class ProgressSync {
       storage: this.storageTotal,
       storageCapacity: this.storageCapacity,
       gameClock: this.gameClock, // Día y hora guardados (Fase 11B)
+      chestsOpened: this.chests.n, // Cofres abiertos en total (Fase 11C)
       ...this.forests,
     };
   }
@@ -675,6 +765,10 @@ export class ProgressSync {
       this.applySleep(op);
       return;
     }
+    if (op.kind === 'chest') {
+      this.applyChest(op, data);
+      return;
+    }
     const sale = op;
     // Bosques desbloqueados por esta venta (ya guardados): se avisa una sola vez
     let unlockedNow = [];
@@ -708,6 +802,7 @@ export class ProgressSync {
     else if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
     else if (op.kind === 'travel') this.onTravelFailed({ id: op.id, forestId: op.forestId, reason });
     else if (op.kind === 'sleep') this.onSleepFailed({ id: op.id, reason });
+    else if (op.kind === 'chest') this.onChestFailed({ id: op.id, forestId: op.forestId, slot: op.slot, reason });
     else this.onSaleFailed({ id: op.id, reason });
   }
 
@@ -766,6 +861,13 @@ export class ProgressSync {
         ({ data: snapshot, sale } = plan);
       } else if (mode === 'reset') {
         ({ data: snapshot, op: sale } = this.planReset());
+      } else if (mode === 'chest') {
+        const plan = this.planChest(arg);
+        if (plan.error) {
+          this.confirmSaved();
+          return { ok: false, reason: plan.error, status: this.status };
+        }
+        ({ data: snapshot, op: sale } = plan);
       } else if (mode === 'sleep') {
         const plan = this.planSleep();
         if (plan.error) {
@@ -799,7 +901,7 @@ export class ProgressSync {
       this.dirty = false;
       this.dirtySince = null;
       this.lazyOnly = false;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…', sleep: 'Durmiendo…' }[sale.kind]) : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…', sleep: 'Durmiendo…', chest: 'Abriendo cofre…' }[sale.kind]) : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);

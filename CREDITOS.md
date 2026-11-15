@@ -81,6 +81,16 @@ WAV mono 22 kHz: formato compatible con todos los navegadores y adecuado para so
 | `sale_chime.wav` | Venta: conteo y destellos (0,45 s) | «Reward Chime» de **Universfield** (Pixabay) — https://pixabay.com/sound-effects/reward-chime-144757/ · original `universfield-reward-chime-144757.mp3` | Pixabay Content License |
 | `sale_levelup.wav` | Venta: cierre y nuevo saldo (1,40 s) | «Level Up 06» de **Universfield** (Pixabay) — https://pixabay.com/sound-effects/level-up-06-370051/ · original `universfield-level-up-06-370051.mp3` | Pixabay Content License |
 
+### Sonidos de los cofres (Fase 11C)
+| Archivo del juego | Uso | Origen | Licencia |
+|---|---|---|---|
+| `chest_open.wav` | Cerradura y tapa al abrir un cofre | Compuesto con Kenney — Impact Sounds 1.0 (`impactMetal_light`, `impactWood_light`, `impactPlank_medium`) | CC0 1.0 |
+| `chest_coins_small.wav`, `chest_coins.wav` | Tintineo de monedas (común y raro) | Compuesto con Kenney — Impact Sounds 1.0 (`impactGlass_light`, `impactPlate_light`, `impactMetal_light`, subidos de tono) | CC0 1.0 |
+| `chest_treasure.wav` | Tesoro legendario: campana y lluvia de monedas | Compuesto con Kenney — Impact Sounds 1.0 (`impactBell_heavy` y los anteriores) | CC0 1.0 |
+
+Generados con `herramientas/procesar_sonidos_cofre.mjs` a partir de los originales de
+`recursos-originales/kenney_impact-sounds/` (no se modifican ni se publican).
+
 ### Sonidos de la venta (Pixabay)
 - Licencia verificada en la página de cada sonido (noviembre de 2026): «Free for use under the Pixabay
   Content License» — https://pixabay.com/service/license-summary/ . Permite el uso comercial y no exige

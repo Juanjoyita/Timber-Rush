@@ -124,6 +124,7 @@
             <div><dt>Madera en el almacén</dt><dd id="st-storage">0 / 100</dd></div>
             <div><dt>Bosque actual · desbloqueados</dt><dd id="st-forests">1 · 1/5</dd></div>
             <div><dt>Día y hora del juego</dt><dd id="st-clock">Día 1 — 08:00</dd></div>
+            <div><dt>Cofres abiertos</dt><dd id="st-chests">0</dd></div>
           </dl>
           <button type="button" class="menu-back btn btn-secondary btn-small" data-back>← Volver</button>
         </div>
@@ -281,6 +282,16 @@
 
       <p id="travel-prompt" class="game-prompt hidden"><kbd>E</kbd> Viajar a otro bosque</p>
       <p id="rest-prompt" class="game-prompt hidden"><kbd>E</kbd> Dormir hasta el amanecer</p>
+      <p id="chest-prompt" class="game-prompt hidden"><kbd>E</kbd> Abrir cofre</p>
+
+      <!-- Cofre abierto (Fase 11C): arriba y pequeño; el juego sigue -->
+      <div id="chest-banner" class="chest-banner hidden" role="status" aria-live="polite">
+        <svg class="chest-icon" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M4 14h24v12H4z" fill="#8a5a33" /><path d="M4 14a12 7 0 0 1 24 0z" fill="#a8703f" />
+          <path d="M4 18h24M14 14h4v8h-4z" stroke="#e0b43a" stroke-width="2" fill="none" />
+        </svg>
+        <div><p id="chest-banner-title" class="chest-title">Cofre</p><p class="chest-amount"><span id="chest-banner-amount">+0</span> <small>monedas</small></p></div>
+      </div>
 
       <!-- Reloj del juego (Fase 11B): esquina superior derecha, discreto -->
       <div id="clock-hud" class="clock-hud" role="status" aria-label="Día 1 — 08:00, día">

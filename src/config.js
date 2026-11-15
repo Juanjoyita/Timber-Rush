@@ -294,6 +294,27 @@ export const REST = {
   radius: 2.6, // Distancia (m) para poder usarla
 };
 
+// ---------- Cofres y tesoros (Fase 11C) ----------
+// 4 cofres por bosque y día del juego (se renuevan a las 06:00). Solo dan monedas de oro: suman
+// a coins y a totalCoinsEarned (cuentan para desbloquear bosques). El aserradero NO multiplica.
+export const CHESTS = {
+  perDay: 4, // Huecos 0-1 comunes, 2 raro, 3 especial (legendario o raro)
+  baseFactor: 15, // Base = precio de la madera del bosque × 15
+  multipliers: { comun: 1, raro: 3, legendario: 8 },
+  commonVariation: 0.2, // Común: ±20 % (determinista)
+  legendaryChance: 0.25, // El especial es legendario el 25 % de los días
+  candidates: 16, // Puntos posibles por bosque (cada día se eligen 4)
+  candidateSpacing: 11, // m entre puntos posibles
+  daySpacing: 15, // m mínimos entre los 4 cofres de un mismo día
+  minFromSpawn: 20, // m al punto de inicio
+  minFromCamp: 8, // m a la zona del aserradero y la tienda
+  minFromPath: 3, // m al borde de los caminos
+  reach: 1.7, // m al cofre para poder abrirlo (E)
+  spawnGuard: 3.5, // Un cofre nuevo no aparece a menos de esto del Worker…
+  revealDistance: 6, // …y aparece cuando se aleja más que esto
+  sparkleDistance: 25, // m: los destellos solo se ven al acercarse
+};
+
 // Viajar entre bosques (Fase 11A): poste indicador del campamento (E). Viajar es gratis.
 export const TRAVEL = {
   key: 'KeyE',
@@ -429,5 +450,11 @@ export const AUDIO = {
     sale_bonus: { file: 'sale_bonus.wav', ui: true, volume: 0.45 }, // Bonus Points (Liecio)
     sale_chime: { file: 'sale_chime.wav', ui: true, volume: 0.38 }, // Reward Chime (Universfield)
     sale_levelup: { file: 'sale_levelup.wav', ui: true, volume: 0.42 }, // Level Up 06 (Universfield)
+    // Cofres (Fase 11C): compuestos con Kenney Impact Sounds (CC0) por herramientas/procesar_sonidos_cofre.mjs.
+    // La apertura suena en el cofre (posicional); las monedas, como interfaz (siempre se oyen igual).
+    chest_open: { file: 'chest_open.wav', volume: 0.9, cooldown: 0.2, maxConcurrent: 1, pitchVariation: 0.04 },
+    chest_coins_small: { file: 'chest_coins_small.wav', ui: true, volume: 0.45 }, // Común
+    chest_coins: { file: 'chest_coins.wav', ui: true, volume: 0.5 }, // Raro
+    chest_treasure: { file: 'chest_treasure.wav', ui: true, volume: 0.55 }, // Legendario
   },
 };

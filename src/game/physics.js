@@ -165,6 +165,29 @@ export function createPhysics(forest) {
     world.addBody(stageBody);
   };
 
+  // --- Grupo de cajas estáticas que se sustituye entero (cofres del día, Fase 11C) ---
+  // Cajas orientadas { x, y, z, hx, hy, hz, rotY }. Solo cambia al cambiar de día o al abrirse
+  // la vista de un cofre que esperaba: nunca en cada fotograma.
+  const createStaticGroup = () => {
+    let bodies = [];
+    return {
+      set(boxes) {
+        for (const b of bodies) world.removeBody(b);
+        bodies = boxes.map((c) => {
+          const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
+          body.position.set(c.x, c.y, c.z);
+          body.quaternion.setFromEuler(0, c.rotY ?? 0, 0);
+          body.addShape(new CANNON.Box(new CANNON.Vec3(c.hx, c.hy, c.hz)));
+          world.addBody(body);
+          return body;
+        });
+      },
+      get count() {
+        return bodies.length;
+      },
+    };
+  };
+
   // --- Pieza móvil (la carretilla): caja CINEMÁTICA que se coloca desde el código ---
   // No la mueve la simulación; la animación solo avanza si no va a tocar al personaje.
   const createMovingBox = (hx, hy, hz) => {
@@ -246,5 +269,5 @@ export function createPhysics(forest) {
     step(dt, timeSinceLastCalled, maxSubSteps);
   };
 
-  return { world, materials, createPlayerBody, activeTrunks, updateActiveTrunks, setStageBoxes, createMovingBox };
+  return { world, materials, createPlayerBody, activeTrunks, updateActiveTrunks, setStageBoxes, createMovingBox, createStaticGroup };
 }
