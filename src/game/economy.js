@@ -148,7 +148,7 @@ const levelOf = (key, levels) => levels[SHOP.columns[key]] ?? (key === 'axe' || 
 const decimal = (n) => String(Math.round(n * 10) / 10).replace('.', ',');
 
 export function upgradeEffect(key, level, levels = {}) {
-  if (key === 'axe') return `Daño ${AXE_LEVELS[level - 1]?.damage ?? '?'} por golpe`;
+  if (key === 'axe') return `${AXE_LEVELS[level - 1]?.name ?? 'Hacha'} · daño ${AXE_LEVELS[level - 1]?.damage ?? '?'} por golpe`;
   if (key === 'backpack') return `${BACKPACK.capacities[level - 1] ?? '?'} unidades`;
   if (key === 'sawmill') return `+${Math.round(ECONOMY.sawmillBonusPerLevel * level * 100)} % al vender · ${decimal(productionStats(level).perMinute)} maderas/min por trabajador`;
   if (key === 'home') return UPGRADES.home.stages[level] ?? ''; // Solo el aspecto: ningún efecto

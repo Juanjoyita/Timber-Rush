@@ -34,6 +34,7 @@ import { GameClock, START_CLOCK } from './gameClock.js';
 import { lightingAt, NightSky } from './dayNight.js';
 import { ChestField } from './chests.js';
 import { clampHome, Village, VILLAGE_HOME } from './village.js';
+import { AXE_LEVELS } from './axes.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
@@ -835,7 +836,7 @@ export class Game {
 
   /** Hacha del nivel guardado o recién comprado (1..3): cambia el modelo y el daño. */
   setAxeLevel(level) {
-    this.axeLevel = Math.min(3, Math.max(1, Math.floor(level) || 1));
+    this.axeLevel = Math.min(AXE_LEVELS.length, Math.max(1, Math.floor(level) || 1)); // 1..10 (Fase 11E)
     if (this.player.axeSocket) this.player.equipAxe(this.axeLevel);
   }
 

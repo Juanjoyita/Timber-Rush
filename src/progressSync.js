@@ -1005,6 +1005,17 @@ export class ProgressSync {
       this.uncertain = { snapshot, expected, sale };
       return { ...this.handleKind(kind, error), pending: Boolean(sale) };
     }
+    if (kind === 'invalid' && sale?.kind === 'purchase') {
+      // Appwrite rechazó el VALOR del nuevo nivel (p. ej. la columna tiene un máximo menor). La
+      // transacción es atómica: no se aplicó nada (ni el cobro ni la versión). Solo falla la
+      // compra; la mochila y el resto del progreso se siguen guardando con normalidad.
+      this.saleFailed(sale, 'nivel-rechazado');
+      this.lastError = { kind: 'nivel-rechazado', type: error?.type ?? null, code: error?.code ?? null, message: error?.message ?? String(error ?? ''), at: new Date(this.clock.now()).toISOString() };
+      console.error(`[Timber Rush] Compra rechazada por Appwrite (${sale.column} = ${sale.level}): ${this.lastError.message}`, this.lastError);
+      this.setStatus(SAVE_STATUS.PENDING);
+      this.schedule();
+      return { ok: false, reason: 'nivel-rechazado', status: this.status };
+    }
     this.saleFailed(sale, kind);
     return this.handleKind(kind, error);
   }

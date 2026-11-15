@@ -5,6 +5,7 @@
 const $ = (id) => document.getElementById(id);
 
 import { UPGRADES } from './config.js';
+import { AXE_LEVELS } from './game/axes.js';
 
 // ---------- Navegación entre pantallas ----------
 /** Muestra una sola pantalla (<section class="screen">) y oculta las demás. */
@@ -129,7 +130,7 @@ export function renderStats(st) {
   $('st-wood').textContent = formatNumber(st.totalWoodCollected);
   $('st-earned').textContent = formatNumber(st.totalCoinsEarned);
   $('st-coins').textContent = formatNumber(st.coins);
-  $('st-axe').textContent = `Nivel ${st.axeLevel}`;
+  $('st-axe').textContent = `Nivel ${st.axeLevel} · ${AXE_LEVELS[st.axeLevel - 1]?.name ?? ''}`;
   $('st-backpack').textContent = `Nivel ${st.backpackLevel}`;
   $('st-sawmill').textContent = `Nivel ${st.sawmillLevel}`;
   $('st-workers').textContent = formatNumber(st.workers);

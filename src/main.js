@@ -294,6 +294,7 @@ const renderShop = () => ui.renderShop(shopItems(sync.levels, sync.coins), sync.
 const PURCHASE_MESSAGES = {
   'saldo-insuficiente': 'No tienes monedas suficientes.',
   'nivel-máximo': 'Esa mejora ya está al máximo.',
+  'nivel-rechazado': 'Appwrite no admite todavía ese nivel (revisa el valor máximo de la columna en Appwrite). No se ha cobrado nada y tu progreso se sigue guardando.',
   'en-curso': null, // Ya hay una operación en curso: no hace falta avisar
   vacía: null,
   [SAVE_STATUS.CONFLICT]: 'No se puede comprar: tu progreso cambió en otra sesión. Recarga la página.',

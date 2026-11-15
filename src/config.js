@@ -340,7 +340,8 @@ export const BACKPACK = {
 // iniciales (50/150 y 100/300) para que comprar sea más difícil (decisión del director,
 // 14-11-2026). Aserradero y trabajadores: precios originales aprobados.
 export const UPGRADES = {
-  axe: { name: 'Hacha', costs: { 2: 150, 3: 450 } }, // Niveles 1..3 (daño 1 / 2 / 4)
+  // Niveles 1..10 (Fase 11E): daño 1 / 2 / 4 / 6 / 9 / 13 / 18 / 24 / 32 / 40 (ver axes.js)
+  axe: { name: 'Hacha', costs: { 2: 150, 3: 450, 4: 1500, 5: 4000, 6: 10000, 7: 25000, 8: 60000, 9: 140000, 10: 300000 } },
   backpack: { name: 'Mochila', costs: { 2: 300, 3: 900 } }, // Capacidad 20 → 40 → 80
   workers: { name: 'Trabajador', costs: { 1: 500, 2: 1000 } }, // 0..2 trabajadores
   sawmill: {
