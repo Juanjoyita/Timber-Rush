@@ -10,11 +10,13 @@
 // FASE 11A: cinco bosques. Solo el bosque actual está construido; al viajar se guarda en memoria
 //          el estado de su tala (árboles, tocones, temporizadores y madera del suelo) y se
 //          reconstruye el destino (misma semilla = mismo bosque) restaurando el suyo.
+// FASE 11B: ciclo de día y noche (20 min de juego activo), reloj global, luna, estrellas, luces
+//          cálidas en el campamento y dormir en la tienda (E, solo de noche).
 // FASE 10: menú principal cinematográfico (órbita sobre el bosque) y transiciones con la
 //          cámara en tercera persona. En el menú NO se simula nada del gameplay.
 //         Cámara en tercera persona con el ratón (Pointer Lock) y pausa con ESC.
 import * as THREE from 'three';
-import { forestById, FORESTS, SALE } from '../config.js';
+import { DAY_NIGHT, forestById, FORESTS, SALE } from '../config.js';
 import { createForest, heightAt, loadForestModels, SAWMILL_AREAS, surfaceAt, WORLD } from './forest.js';
 import { createPhysics, FIXED_STEP, PLAYER_RADIUS } from './physics.js';
 import { Player } from './Player.js';
@@ -28,12 +30,15 @@ import { WorkerCrew, WorkerProduction } from './workers.js';
 import { MenuCamera } from './menuCamera.js';
 import { clampLevel, loadSawmillModels, SawmillStages } from './sawmillStages.js';
 import { ForestAmbience } from './forestAmbience.js';
+import { GameClock, START_CLOCK } from './gameClock.js';
+import { lightingAt, NightSky } from './dayNight.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
 const SHADOW_HALF = 32; // Área de sombras: 64 × 64 m
 const SHADOW_MAP = 2048;
-const SUN_OFFSET = new THREE.Vector3(20, 30, 12).normalize().multiplyScalar(60);
+const SUN_DISTANCE = 60; // Distancia del sol/luna al centro de las sombras (m)
+const REST_REACH = 1.2; // Distancia (m) a la tienda para poder dormir
 
 // Cámara en tercera persona: ver ThirdPersonCamera.js (encuadre, sensibilidad, zoom y límites)
 const CAMERA_FOV = 65;
@@ -60,6 +65,21 @@ export class Game {
     this.forestStates = new Map(); // id → estado de la tala de los bosques NO construidos (memoria)
     this.forestTask = Promise.resolve(); // Cambios de bosque, uno detrás de otro
     this.ambience = null; // Partículas del bosque actual
+
+    // ---------- Día y noche (Fase 11B) ----------
+    // El reloj es global (los cinco bosques) y solo avanza con la partida activa. main.js lo
+    // coloca con el progreso guardado (setClock) y recibe la hora para guardarla (onClockChange).
+    this.clock = new GameClock(START_CLOCK);
+    this.lighting = null; // Valores de luz de la hora actual (lightingAt)
+    this.onClockChange = () => {}; // (estado { d, t }) => void — como mucho una vez por segundo
+    this.onClockDisplay = () => {}; // (texto "Día 7 — 21:30", esDeNoche) => void — al cambiar
+    this.onRestPromptChange = () => {}; // (null | 'night' | 'day') junto a la tienda
+    this.onSleepRequest = () => {}; // E junto a la tienda de noche: main.js guarda y amanece
+    this.onRestDenied = () => {}; // E junto a la tienda de día
+    this.nearRest = false;
+    this.restPrompt = null;
+    this.clockSyncTime = 0;
+    this.clockText = '';
 
     // ---------- Escena ----------
     // THREE.Scene es el contenedor de todos los objetos, luces y cámara.
@@ -92,6 +112,7 @@ export class Game {
     this.enterPose = { position: new THREE.Vector3(), target: new THREE.Vector3() }; // Reutilizable
 
     this.createLights();
+    this.nightSky = new NightSky(this.scene); // Luna y estrellas (solo de noche)
 
     // ---------- Carga: bosque + personaje en paralelo ----------
     // "ready" es una promesa que se resuelve cuando todo está en la escena
@@ -173,7 +194,7 @@ export class Game {
     this.ready = this.load();
 
     // Reloj para calcular el tiempo entre fotogramas (delta)
-    this.clock = new THREE.Clock();
+    this.frameClock = new THREE.Clock(); // Tiempo entre fotogramas (el reloj del juego es this.clock)
 
     // Ajustar cámara y renderer cuando cambia el tamaño de la ventana
     window.addEventListener('resize', () => this.onResize());
@@ -203,6 +224,7 @@ export class Game {
     this.sun.shadow.normalBias = 0.03;
     this.scene.add(this.sun, this.sun.target);
     this.shadowCenter = new THREE.Vector2(Infinity, Infinity);
+    this.sunDirection = new THREE.Vector3(20, 30, 12).normalize(); // La de siempre hasta que se aplique la hora
   }
 
   /**
@@ -217,7 +239,14 @@ export class Game {
     if (x === this.shadowCenter.x && z === this.shadowCenter.y) return;
     this.shadowCenter.set(x, z);
     this.sun.target.position.set(x, 0, z);
-    this.sun.position.set(x + SUN_OFFSET.x, SUN_OFFSET.y, z + SUN_OFFSET.z);
+    this.placeSun();
+  }
+
+  /** Sol o luna en la dirección de la hora actual (Fase 11B), alrededor del centro de sombras. */
+  placeSun() {
+    if (!Number.isFinite(this.shadowCenter.x)) return; // Aún sin centro de sombras (primer fotograma)
+    const d = this.sunDirection;
+    this.sun.position.set(this.shadowCenter.x + d.x * SUN_DISTANCE, d.y * SUN_DISTANCE, this.shadowCenter.y + d.z * SUN_DISTANCE);
     this.sun.target.updateMatrixWorld();
   }
 
@@ -310,19 +339,113 @@ export class Game {
 
   /** Cielo, niebla y luces del bosque (sombras: las mismas, solo del sol). */
   applyForestLook(config, { lightsOnly = false } = {}) {
+    // Fase 11B: la luz depende también de la hora (sin reloj, la de día de siempre)
+    const L = this.clock ? (this.lighting = lightingAt(config, this.clock.time, this.lighting ?? undefined)) : null;
     const light = config.light ?? FORESTS[0].light;
-    this.sun.color.set(light.sun);
-    this.sun.intensity = light.sunIntensity;
-    this.ambientLight.color.set(light.ambient);
-    this.ambientLight.intensity = light.ambientIntensity;
+    this.sun.color.set(L ? L.sunColor : light.sun);
+    this.sun.intensity = L ? L.sunIntensity : light.sunIntensity;
+    this.ambientLight.color.set(L ? L.ambientColor : light.ambient);
+    this.ambientLight.intensity = L ? L.ambientIntensity : light.ambientIntensity;
+    if (L && this.sunDirection) this.sunDirection.copy(L.direction);
     if (lightsOnly) return;
-    const sky = config.colors.sky;
-    this.scene.background.set(sky);
-    this.scene.fog.color.set(sky);
-    this.scene.fog.near = config.fog.near;
-    this.scene.fog.far = config.fog.far;
+    const sky = L ? L.sky : new THREE.Color(config.colors.sky);
+    this.scene.background.copy(sky);
+    this.scene.fog.color.copy(sky);
+    this.scene.fog.near = L ? L.fogNear : config.fog.near;
+    this.scene.fog.far = L ? L.fogFar : config.fog.far;
     this.camera.far = config.fog.far + 20; // Lo que la niebla oculta no se dibuja
     this.camera.updateProjectionMatrix();
+  }
+
+  // ---------- Día y noche (Fase 11B) ----------
+
+  /** Reloj guardado (al cargar, restaurar, reiniciar o tras dormir). No genera nada. */
+  setClock(state) {
+    this.clock.set(state);
+    this.clockText = '';
+    this.updateDayNight(0);
+  }
+
+  /**
+   * Luz de la hora actual en el bosque actual: cielo, niebla, sol/luna, ambiente, estrellas,
+   * farol, hoguera y ventanas. Cada fotograma (también en el menú, con el reloj parado). Barato:
+   * solo mezclas de colores; nunca se añaden ni quitan luces.
+   */
+  updateDayNight(dt) {
+    if (!this.forest || !this.clock) return;
+    const L = (this.lighting = lightingAt(this.forestConfig, this.clock.time, this.lighting ?? undefined));
+    if (!this.travelFx) {
+      this.scene.background.copy(L.sky);
+      this.scene.fog.color.copy(L.sky);
+      this.scene.fog.near = L.fogNear;
+      this.scene.fog.far = L.fogFar;
+    }
+    this.sun.color.copy(L.sunColor);
+    this.sun.intensity = L.sunIntensity;
+    this.ambientLight.color.copy(L.ambientColor);
+    this.ambientLight.intensity = L.ambientIntensity;
+    this.sunDirection.copy(L.direction);
+    this.placeSun();
+    this.nightSky?.update(this.camera, L);
+    const [lanternDay, lanternNight] = DAY_NIGHT.campLights.lantern;
+    if (this.forest.lanternLight) this.forest.lanternLight.intensity = lanternDay + (lanternNight - lanternDay) * L.night;
+    this.forest.restSpot?.update(dt, L.night, DAY_NIGHT.campLights.fire);
+    this.sawmillStages?.setWindowGlow(L.night);
+    const text = this.clock.format();
+    const night = this.clock.isNight;
+    if (text !== this.clockText || night !== this.clockNight) {
+      this.clockText = text;
+      this.clockNight = night;
+      this.onClockDisplay(text, night);
+    }
+  }
+
+  /** Distancia (XZ) del Worker a la tienda (a su caja). */
+  restDistance() {
+    const r = this.forest?.restSpot?.collider;
+    if (!r) return Infinity;
+    const p = this.player.position;
+    return Math.hypot(Math.max(Math.abs(p.x - r.x) - r.hx, 0), Math.max(Math.abs(p.z - r.z) - r.hz, 0));
+  }
+
+  /**
+   * Interacciones con E (poste de viaje y tienda): se muestra UN solo aviso, el del más cercano,
+   * y E usa exactamente ese. Junto a la tienda: de noche se puede dormir; de día, solo se informa.
+   */
+  updateInteractions() {
+    const p = this.player.position;
+    const post = this.forest?.travelPost;
+    const dPost = post ? Math.hypot(p.x - post.x, p.z - post.z) - post.radius : Infinity;
+    const dRest = this.clock ? this.restDistance() - REST_REACH : Infinity;
+    this.nearTravelPost = dPost <= 0;
+    this.nearRest = dRest <= 0;
+    const target = this.nearRest && (!this.nearTravelPost || dRest < dPost) ? 'rest' : this.nearTravelPost ? 'travel' : null;
+    this.interactionTarget = target;
+    const travelOn = target === 'travel';
+    if (travelOn !== Boolean(this.travelPromptOn)) {
+      this.travelPromptOn = travelOn;
+      this.onTravelPostChange(travelOn);
+    }
+    const rest = target === 'rest' ? (this.clock.isNight ? 'night' : 'day') : null;
+    if (rest !== this.restPrompt) {
+      this.restPrompt = rest;
+      this.onRestPromptChange(rest);
+    }
+  }
+
+  updateRestSpot() {
+    this.updateInteractions();
+  }
+
+  /** E junto a la tienda: de noche pide dormir (main.js lo guarda); de día se informa. */
+  requestSleep() {
+    if (!this.session.active || !this.nearRest) return false;
+    if (!this.clock.isNight) {
+      this.onRestDenied();
+      return false;
+    }
+    this.onSleepRequest();
+    return true;
   }
 
   /**
@@ -338,8 +461,13 @@ export class Game {
     this.scene.remove(this.forest.group);
     this.forest.dispose();
     this.forest = this.physics = this.chopping = this.sawmillStages = this.ambience = null;
-    if (this.nearTravelPost) this.onTravelPostChange(false);
+    if (this.travelPromptOn) this.onTravelPostChange(false);
+    this.travelPromptOn = false;
+    this.nearTravelPost = false;
     if (this.inSellZone) this.onSellZoneChange(false);
+    if (this.restPrompt) this.onRestPromptChange(null);
+    this.nearRest = false;
+    this.restPrompt = null;
   }
 
   /**
@@ -378,9 +506,11 @@ export class Game {
       to: { position: start.position.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise, 0)), target: start.target.clone().add(new THREE.Vector3(0, TRAVEL_FX.rise * 0.6, 0)) },
       fog: { near: this.scene.fog.near, far: this.scene.fog.far },
       color0: this.scene.fog.color.clone(),
-      color1: new THREE.Color(forestById(id).colors.sky),
+      end: lightingAt(forestById(id), this.clock?.time ?? 120), // Cielo y niebla del destino a esta hora
+      color1: null,
       color: new THREE.Color(),
     };
+    fx.color1 = fx.end.sky.clone();
     fx.promise = new Promise((resolve, reject) => {
       fx.resolve = resolve;
       fx.reject = reject;
@@ -482,7 +612,7 @@ export class Game {
       }
     } else {
       const k = ease(Math.min(1, fx.t / fx.down));
-      this.travelPose(fx.downFrom, fx.downTo, k, TRAVEL_FX.cloud, this.forestConfig.fog, fx.color1);
+      this.travelPose(fx.downFrom, fx.downTo, k, TRAVEL_FX.cloud, { near: fx.end.fogNear, far: fx.end.fogFar }, fx.color1);
       this.setCloudOpacity(0.9 * Math.max(0, 1 - (fx.t / fx.down) * 1.4));
       if (!fx.cleared && fx.t >= fx.down * 0.4) {
         fx.cleared = true;
@@ -500,19 +630,17 @@ export class Game {
 
   /** E durante la partida: junto al poste abre el panel de bosques. */
   interact() {
-    if (!this.nearTravelPost || !this.session.active) return false;
-    return this.session.openTravel();
+    if (!this.session.active) return false;
+    this.updateInteractions(); // Poste y tienda comparten la E: se usa el del aviso visible
+    if (this.interactionTarget === 'rest') return this.requestSleep();
+    if (this.interactionTarget === 'travel') return this.session.openTravel();
+    return false;
   }
 
   /** Aviso "E · Viajar" al acercarse al poste del campamento. */
   updateTravelPost() {
-    const post = this.forest?.travelPost;
-    if (!post) return;
-    const p = this.player.position;
-    const near = Math.hypot(p.x - post.x, p.z - post.z) <= post.radius;
-    if (near === this.nearTravelPost) return;
-    this.nearTravelPost = near;
-    this.onTravelPostChange(near);
+    if (!this.forest?.travelPost) return;
+    this.updateInteractions();
   }
 
   // ---------- Menú ↔ partida (Fase 10) ----------
@@ -656,6 +784,7 @@ export class Game {
     this.resetWorld(); // Bosque, madera del suelo y posición: nada de la cuenta anterior
     this.setWorkerCount(0);
     this.setSawmillLevel(0);
+    this.setClock(START_CLOCK);
     this.setForest(1); // La siguiente cuenta empieza viendo el Bosque Verde hasta cargar el suyo
   }
 
@@ -691,7 +820,7 @@ export class Game {
   // Bucle principal con requestAnimationFrame (se sincroniza con el refresco de pantalla)
   loop() {
     requestAnimationFrame(this.loop);
-    const dt = Math.min(this.clock.getDelta(), MAX_DELTA);
+    const dt = Math.min(this.frameClock.getDelta(), MAX_DELTA);
     this.tick(dt);
     this.renderer.render(this.scene, this.camera);
   }
@@ -721,6 +850,9 @@ export class Game {
       this.menuCamera.update(dt);
     }
 
+    // Luz de la hora actual (Fase 11B)
+    this.updateDayNight(dt);
+
     // Los árboles con la cámara dentro de su copa se ocultan (si no, se ven "cortados")
     if (this.forest) this.forest.updateCameraOcclusion(this.camera.position);
 
@@ -741,7 +873,14 @@ export class Game {
     const collected = this.chopping.wood.collect(dt, this.player.position, this.backpack, () => this.onBackpackFull());
     if (collected > 0) this.onWoodCollected(collected);
     this.updateSellZone();
-    this.updateTravelPost();
+    // Reloj (Fase 11B): solo avanza aquí, con la partida activa
+    this.clock?.advance(dt);
+    this.clockSyncTime += dt;
+    if (this.clockSyncTime >= 1) {
+      this.clockSyncTime = 0;
+      this.onClockChange(this.clock.toJSON());
+    }
+    this.updateTravelPost(); // Avisos del poste y de la tienda (el más cercano)
     this.saleCelebration.update(dt);
     // Trabajadores: producen solo durante la partida activa
     const units = this.production.update(dt, this.workerCount, this.storageFree(), this.sawmillLevel);

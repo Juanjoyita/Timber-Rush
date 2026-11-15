@@ -174,6 +174,44 @@ ui.bindTravelEvents({
   onClose: () => game.session.closeTravel(),
 });
 
+// ---------- Día y noche (Fase 11B) ----------
+// El reloj es global y solo avanza jugando. Su hora viaja dentro de resources en TODAS las
+// escrituras (sin guardado aparte). Dormir: solo de noche, junto a la tienda; el amanecer solo
+// se muestra cuando Appwrite confirma el nuevo día.
+game.onClockChange = (state) => sync.setClock(state);
+game.onClockDisplay = (text, night) => ui.renderClock(text, night);
+game.onRestPromptChange = ui.showRestPrompt;
+game.onRestDenied = () => ui.showSaleMessage('Solo puedes dormir de noche (de 20:00 a 06:00).');
+sync.onSleep = ({ clock }) => game.setClock(clock); // Confirmado: el día siguiente a las 06:00
+sync.onSleepFailed = ({ reason }) => ui.showSaleMessage(`No se pudo guardar el descanso (${reason}).`);
+const SLEEP_MESSAGES = {
+  'no-es-de-noche': 'Ya no es de noche: no hace falta dormir.',
+  'en-curso': 'Espera a que termine la operación en curso.',
+  [SAVE_STATUS.CONFLICT]: 'No se pudo dormir: tu progreso cambió en otra sesión. Recarga la página.',
+  [SAVE_STATUS.CONDITION]: 'No se pudo dormir: el guardado está desactivado.',
+  [SAVE_STATUS.BLOCKED]: 'No se pudo dormir: los datos guardados no son válidos.',
+};
+let sleeping = false;
+game.onSleepRequest = async () => {
+  if (sleeping || !game.session.startSleep()) return; // Una sola vez aunque se pulse E varias veces
+  sleeping = true;
+  try {
+    sync.setClock(game.clock.toJSON()); // La hora exacta antes de dormir
+    await ui.showSleep(true); // Fundido a negro: "Durmiendo…"
+    const result = await sync.sleep();
+    if (result.ok) {
+      ui.showSleepDay(`Día ${game.clock.day}`); // Amanece (reloj ya guardado)
+      await new Promise((r) => setTimeout(r, 1300));
+    } else {
+      ui.showSaleMessage(SLEEP_MESSAGES[result.reason] ?? `No se pudo guardar el descanso (${result.reason ?? result.status}). Sigues en la misma noche.`);
+    }
+  } finally {
+    await ui.showSleep(false);
+    game.session.endSleep();
+    sleeping = false;
+  }
+};
+
 // ---------- Tienda (Fase 8) ----------
 // Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
 // Comprar no cambia nada en el juego hasta que Appwrite confirma la compra (onPurchase).
@@ -288,6 +326,7 @@ function applyProgressToGame() {
   game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
   game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
+  game.setClock(sync.gameClock); // Día y hora guardados (Fase 11B)
   // Bosque guardado (Fase 11A): se construye en segundo plano; Continuar espera a que esté listo
   game.setForest(sync.forests.currentForest).then(() => ui.setForestHud(forestById(game.forestId).name), () => {});
   renderStorage();
@@ -355,7 +394,7 @@ ui.bindMenuEvents({
     ui.showScreen('menu');
     sync.flush(); // Guardar al volver al menú
   },
-  onShowStats: () => ui.renderStats({ ...sync.stats(), currentForestName: forestById(sync.forests.currentForest).name }),
+  onShowStats: () => ui.renderStats({ ...sync.stats(), currentForestName: forestById(sync.forests.currentForest).name, clockText: game.clock.format() }),
   /** Nueva partida: solo llega aquí con "REINICIAR" escrito (lo comprueba ui.js). */
   onNewGame: async () => {
     ui.setNewGameBusy(true);

@@ -70,6 +70,8 @@ export const SYNC_SETTINGS = {
   maxResourcesLength: 1000, // Tamaño de la columna "resources" en Appwrite
 };
 
+import { isNightAt, parseClock, START_CLOCK } from './game/gameClock.js';
+
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
 const FOREST_COUNT = 5; // Bosques del juego (columnas currentForest y unlockedForests: 1..5)
 /** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
@@ -133,6 +135,8 @@ export class ProgressSync {
     this.onResetFailed = () => {}; // (motivo) => void (solo resultados diferidos)
     this.onTravel = () => {}; // ({ forestId }) => void — viaje confirmado en Appwrite (Fase 11A)
     this.onTravelFailed = () => {}; // ({ forestId, reason }) => void (solo resultados diferidos)
+    this.onSleep = () => {}; // ({ clock }) => void — descanso confirmado en Appwrite (Fase 11B)
+    this.onSleepFailed = () => {}; // ({ reason }) => void (solo resultados diferidos)
     this.saleSeq = 0; // Identificador de cada operación (no se reinicia al cambiar de cuenta)
     this.reset();
   }
@@ -210,6 +214,9 @@ export class ProgressSync {
     const coins = profile.coins ?? 0;
     const totalCoins = profile.totalCoinsEarned ?? 0;
     let damaged = resources === null || !isCount(total) || !isCount(version) || !isCount(coins) || !isCount(totalCoins) || (resources && !validContents(resources.storage));
+    // Reloj (Fase 11B): si falta (perfil antiguo) se empieza en el Día 1 a las 08:00; si está
+    // dañado, se protege como el resto de datos (no se sobrescribe)
+    if (resources && resources.clock !== undefined && !parseClock(resources.clock)) damaged = true;
 
     this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
     backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
@@ -400,6 +407,49 @@ export class ProgressSync {
     return this.runOperation('sale');
   }
 
+  // ---------- Reloj del juego (Fase 11B) ----------
+
+  /** Reloj guardado (o el inicial si el perfil aún no tiene). */
+  get gameClock() {
+    return parseClock(this.base.clock) ?? { ...START_CLOCK };
+  }
+
+  /**
+   * Hora actual del juego (Game.js la envía mientras se juega). Va dentro de resources, así que
+   * viaja en TODAS las escrituras (guardar, vender, comprar, viajar): nunca hay una escritura
+   * aparte que pueda pisar otros datos. Se guarda sin prisa (como la producción): como mucho
+   * cada 30 s, o antes si se guarda por otro motivo.
+   */
+  setClock(state) {
+    const clock = parseClock(state);
+    if (!this.attached || !clock || this.restoring) return;
+    const current = this.base.clock;
+    if (current && current.d === clock.d && current.t === clock.t) return;
+    this.base = { ...this.base, clock };
+    this.markDirtyLazy();
+  }
+
+  /**
+   * Dormir (solo de noche): se guarda el reloj del día siguiente a las 06:00 con la misma
+   * escritura versionada y atómica. El juego solo amanece al confirmarse (onSleep).
+   */
+  sleep() {
+    return this.runOperation('sleep');
+  }
+
+  planSleep() {
+    const now = this.gameClock;
+    if (!isNightAt(now.t)) return { error: 'no-es-de-noche' };
+    const next = { d: now.d + 1, t: 0 };
+    const resources = JSON.stringify({ ...this.base, clock: next, backpack: this.backpack.toJSON() });
+    return { data: { resources, totalWoodCollected: this.totalWood }, op: { kind: 'sleep', id: ++this.saleSeq, clock: next, done: false } };
+  }
+
+  applySleep(op) {
+    this.base = { ...this.base, clock: op.clock };
+    this.onSleep({ id: op.id, clock: { ...op.clock } });
+  }
+
   // ---------- Bosques (Fase 11A) ----------
 
   /** Bosques desbloqueados con unas monedas históricas (sin función: los guardados). */
@@ -458,7 +508,7 @@ export class ProgressSync {
   /** Datos iniciales de la partida (identidad y saveVersion no se tocan). */
   planReset() {
     const data = {
-      resources: JSON.stringify(INITIAL_PROGRESS.resources),
+      resources: JSON.stringify({ ...INITIAL_PROGRESS.resources, clock: { ...START_CLOCK } }), // Día 1, 08:00
       totalWoodCollected: 0,
       coins: 0,
       totalCoinsEarned: 0,
@@ -532,6 +582,7 @@ export class ProgressSync {
       backpackCapacity: this.backpack ? this.backpack.capacity : 0,
       storage: this.storageTotal,
       storageCapacity: this.storageCapacity,
+      gameClock: this.gameClock, // Día y hora guardados (Fase 11B)
       ...this.forests,
     };
   }
@@ -620,6 +671,10 @@ export class ProgressSync {
       this.applyTravel(op, data);
       return;
     }
+    if (op.kind === 'sleep') {
+      this.applySleep(op);
+      return;
+    }
     const sale = op;
     // Bosques desbloqueados por esta venta (ya guardados): se avisa una sola vez
     let unlockedNow = [];
@@ -652,6 +707,7 @@ export class ProgressSync {
     if (op.kind === 'reset') this.onResetFailed(reason);
     else if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
     else if (op.kind === 'travel') this.onTravelFailed({ id: op.id, forestId: op.forestId, reason });
+    else if (op.kind === 'sleep') this.onSleepFailed({ id: op.id, reason });
     else this.onSaleFailed({ id: op.id, reason });
   }
 
@@ -710,6 +766,13 @@ export class ProgressSync {
         ({ data: snapshot, sale } = plan);
       } else if (mode === 'reset') {
         ({ data: snapshot, op: sale } = this.planReset());
+      } else if (mode === 'sleep') {
+        const plan = this.planSleep();
+        if (plan.error) {
+          this.confirmSaved();
+          return { ok: false, reason: plan.error, status: this.status };
+        }
+        ({ data: snapshot, op: sale } = plan);
       } else if (mode === 'travel') {
         const plan = this.planTravel(arg);
         if (plan.error) {
@@ -736,7 +799,7 @@ export class ProgressSync {
       this.dirty = false;
       this.dirtySince = null;
       this.lazyOnly = false;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…' }[sale.kind]) : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…', sleep: 'Durmiendo…' }[sale.kind]) : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);

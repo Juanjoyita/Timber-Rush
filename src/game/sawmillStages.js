@@ -216,6 +216,40 @@ const SAW_DISC_HEIGHT = 1.25; // Eje del disco sobre la base de la mesa
 const CONVEYOR = { top: 1.02, speed: 0.55, logScale: 0.42, spacing: 2.4, fade: 0.5 };
 const SMOKE = { puffs: 7, life: 4.2, rise: 0.55, drift: 0.18, size: 0.32 };
 
+// ---------- Ventanas iluminadas de noche (Fase 11B) ----------
+// Las caras con el color de ventana del paquete (#f3cd66) se separan de cada modelo UNA vez y se
+// dibujan juntas en una malla que no depende de la luz: de noche brillan con un tono cálido.
+const WINDOW_LINEAR = [0.896, 0.611, 0.133];
+const WINDOW_DAY = new THREE.Color().setRGB(0.896 * 0.8, 0.611 * 0.8, 0.133 * 0.8);
+const WINDOW_NIGHT = new THREE.Color(0xffd27a);
+const windowSplits = new WeakMap(); // geometría del modelo → { base, windows }
+
+/** Separa las caras de ventana de una geometría (no indexada, con colores). */
+export function splitWindows(geometry) {
+  if (windowSplits.has(geometry)) return windowSplits.get(geometry);
+  const pos = geometry.attributes.position, col = geometry.attributes.color, nor = geometry.attributes.normal;
+  const keep = [], win = [];
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    const isWindow = Math.abs(col.getX(i) - WINDOW_LINEAR[0]) < 0.03 && Math.abs(col.getY(i) - WINDOW_LINEAR[1]) < 0.03 && Math.abs(col.getZ(i) - WINDOW_LINEAR[2]) < 0.03;
+    (isWindow ? win : keep).push(i);
+  }
+  const build = (list) => {
+    const g = new THREE.BufferGeometry();
+    for (const [name, attr] of [['position', pos], ['color', col], ['normal', nor]]) {
+      if (!attr) continue;
+      const out = new Float32Array(list.length * 9);
+      list.forEach((first, k) => {
+        for (let v = 0; v < 3; v++) for (let c = 0; c < 3; c++) out[k * 9 + v * 3 + c] = attr.getComponent(first + v, c);
+      });
+      g.setAttribute(name, new THREE.BufferAttribute(out, 3));
+    }
+    return g;
+  };
+  const result = win.length ? { base: build(keep), windows: build(win) } : { base: geometry, windows: null };
+  windowSplits.set(geometry, result);
+  return result;
+}
+
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _p = new THREE.Vector3();
@@ -250,6 +284,8 @@ export class SawmillStages {
     this.group.name = 'aserradero-etapas';
     this.group.position.set(origin.x, 0, origin.z);
     this.staticMesh = null;
+    this.windowMesh = null;
+    this.windowMaterial = new THREE.MeshBasicMaterial({ color: WINDOW_DAY.clone(), fog: true }); // Ventanas: brillan de noche
     this.time = 0;
 
     // Disco de la sierra (gira) — uno por cada mesa con anim 'saw'
@@ -331,7 +367,9 @@ export class SawmillStages {
       this.staticMesh.geometry.dispose();
       this.staticMesh = null;
     }
-    const parts = items.filter((it) => it.anim !== 'forklift').map((it) => this.geometries[it.model].clone().applyMatrix4(itemMatrix(it)));
+    const statics = items.filter((it) => it.anim !== 'forklift');
+    const parts = statics.map((it) => splitWindows(this.geometries[it.model]).base.clone().applyMatrix4(itemMatrix(it)));
+    const windowParts = statics.filter((it) => splitWindows(this.geometries[it.model]).windows).map((it) => splitWindows(this.geometries[it.model]).windows.clone().applyMatrix4(itemMatrix(it)));
     if (parts.length) {
       const merged = mergeGeometries(parts, false);
       for (const p of parts) p.dispose();
@@ -340,6 +378,19 @@ export class SawmillStages {
       this.staticMesh.castShadow = true;
       this.staticMesh.receiveShadow = true;
       this.group.add(this.staticMesh);
+    }
+    // Ventanas (1 malla más, solo si hay edificios con ventanas)
+    if (this.windowMesh) {
+      this.group.remove(this.windowMesh);
+      this.windowMesh.geometry.dispose();
+      this.windowMesh = null;
+    }
+    if (windowParts.length) {
+      const merged = mergeGeometries(windowParts.map((g) => (g.deleteAttribute('normal'), g.deleteAttribute('color'), g)), false);
+      for (const p of windowParts) p.dispose();
+      this.windowMesh = new THREE.Mesh(merged, this.windowMaterial);
+      this.windowMesh.name = 'ventanas';
+      this.group.add(this.windowMesh);
     }
 
     // 2. Piezas animadas visibles
@@ -367,9 +418,16 @@ export class SawmillStages {
     return true;
   }
 
+  /** Brillo de las ventanas según la noche (0 = día, 1 = noche). Solo visual. */
+  setWindowGlow(night) {
+    this.windowMaterial.color.copy(WINDOW_DAY).lerp(WINDOW_NIGHT, night);
+  }
+
   /** Libera lo creado por las etapas al salir del bosque (los modelos del GLB se conservan). */
   dispose() {
     if (this.staticMesh) this.staticMesh.geometry.dispose();
+    if (this.windowMesh) this.windowMesh.geometry.dispose();
+    this.windowMaterial.dispose();
     this.conveyorLogs.dispose();
     this.smoke.dispose();
     this.smoke.geometry.dispose();

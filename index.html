@@ -123,6 +123,7 @@
             <div><dt>Madera en la mochila</dt><dd id="st-bp-wood">0 / 20</dd></div>
             <div><dt>Madera en el almacén</dt><dd id="st-storage">0 / 100</dd></div>
             <div><dt>Bosque actual · desbloqueados</dt><dd id="st-forests">1 · 1/5</dd></div>
+            <div><dt>Día y hora del juego</dt><dd id="st-clock">Día 1 — 08:00</dd></div>
           </dl>
           <button type="button" class="menu-back btn btn-secondary btn-small" data-back>← Volver</button>
         </div>
@@ -279,6 +280,17 @@
       </div>
 
       <p id="travel-prompt" class="game-prompt hidden"><kbd>E</kbd> Viajar a otro bosque</p>
+      <p id="rest-prompt" class="game-prompt hidden"><kbd>E</kbd> Dormir hasta el amanecer</p>
+
+      <!-- Reloj del juego (Fase 11B): esquina superior derecha, discreto -->
+      <div id="clock-hud" class="clock-hud" role="status" aria-label="Día 1 — 08:00, día">
+        <svg class="clock-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="#f2c94c" /><g stroke="#f2c94c" stroke-width="2" stroke-linecap="round"><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1" /></g></svg>
+        <svg class="clock-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15.5 3.2A9 9 0 1 0 20.8 15 7.2 7.2 0 0 1 15.5 3.2z" fill="#dfe6ff" /></svg>
+        <span id="clock-text">Día 1 — 08:00</span>
+      </div>
+
+      <!-- Descanso (Fase 11B): fundido a negro mientras se guarda el nuevo día -->
+      <div id="sleep-overlay" class="sleep-overlay" aria-live="polite"><p id="sleep-text">Durmiendo…</p></div>
 
       <!-- Sobre la plataforma de venta -->
       <p id="sell-prompt" class="game-prompt hidden"><kbd>F</kbd> Vender madera</p>

@@ -134,6 +134,7 @@ export function renderStats(st) {
   $('st-bp-wood').textContent = `${formatNumber(st.backpack)} / ${formatNumber(st.backpackCapacity)}`;
   $('st-storage').textContent = `${formatNumber(st.storage)} / ${formatNumber(st.storageCapacity)}`;
   $('st-forests').textContent = `${st.currentForestName ?? st.currentForest} · ${st.unlockedForests}/5 desbloqueados`;
+  $('st-clock').textContent = st.clockText ?? `Día ${st.gameClock?.d ?? 1}`;
 }
 
 /** Controles de configuración con los valores actuales. */
@@ -574,6 +575,38 @@ export function showForestTitle(forest) {
     $('forest-title-detail').textContent = `Madera: ${formatNumber(forest.valuePerUnit)} monedas por unidad`;
   }
   el.classList.toggle('is-visible', Boolean(forest));
+}
+
+// ---------- Día y noche (Fase 11B) ----------
+
+/** Indicador "Día 7 — 21:30" con sol o luna (solo se toca el DOM cuando cambia). */
+export function renderClock(text, night) {
+  $('clock-text').textContent = text;
+  const hud = $('clock-hud');
+  hud.classList.toggle('is-night', night);
+  hud.setAttribute('aria-label', `${text}, ${night ? 'noche' : 'día'}`);
+}
+
+/** Aviso junto a la tienda: null (lejos), 'night' (se puede dormir) o 'day' (solo de noche). */
+export function showRestPrompt(state) {
+  const el = $('rest-prompt');
+  el.classList.toggle('hidden', !state);
+  if (state === 'night') el.innerHTML = '<kbd>E</kbd> Dormir hasta el amanecer';
+  if (state === 'day') el.textContent = 'Solo puedes dormir de noche (20:00–06:00)';
+}
+
+/** Fundido a negro del descanso (true) o vuelta a la imagen (false). Se resuelve al terminar. */
+export function showSleep(on) {
+  const el = $('sleep-overlay');
+  if (on) $('sleep-text').textContent = 'Durmiendo…';
+  el.classList.toggle('is-on', on);
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
+  return new Promise((resolve) => setTimeout(resolve, reduced ? 50 : 750));
+}
+
+/** Texto del nuevo día durante el fundido ("Día 8"). */
+export function showSleepDay(text) {
+  $('sleep-text').textContent = `Amanece · ${text}`;
 }
 
 // ---------- Eventos ----------

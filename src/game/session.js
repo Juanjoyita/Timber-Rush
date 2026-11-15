@@ -15,6 +15,8 @@
 // - Viajar (Fase 11A): E junto al poste del campamento abre el panel de bosques. Como la
 //   tienda: congela la simulación y libera el cursor; ESC o E lo cierran (si no hay un viaje
 //   en curso). Durante el viaje (carga del bosque) todo sigue congelado.
+// - Dormir (Fase 11B): mientras se duerme todo está congelado y ESC, B y E no hacen nada (no se
+//   puede dormir dos veces con pulsaciones repetidas). El cursor sigue capturado.
 // - Menú principal (Fase 10): modos menu → entering → playing → leaving → menu. Solo en
 //   "playing" (sin pausa ni tienda) la partida está activa. En el menú y en las transiciones no
 //   hay controles, ESC/B no hacen nada y perder el cursor no es una pausa.
@@ -36,6 +38,7 @@ export class PlaySession {
     this.inShop = false;
     this.inTravel = false; // Panel de bosques abierto (Fase 11A)
     this.travelBusy = false; // Viaje en curso: el panel no se puede cerrar
+    this.inSleep = false; // Durmiendo (Fase 11B)
     this.mode = 'menu';
     this.paused = false;
     this.attackHeld = false;
@@ -109,6 +112,7 @@ export class PlaySession {
   beginLeave() {
     if (this.mode === 'menu' || this.mode === 'leaving') return false;
     this.mode = 'leaving'; // Primero: así la pérdida del cursor no se interpreta como pausa
+    this.inSleep = false;
     if (this.inShop) {
       this.inShop = false;
       this.onShopChange(false);
@@ -143,7 +147,7 @@ export class PlaySession {
   }
 
   pause() {
-    if (!this.playing || this.paused || this.inShop || this.inTravel) return; // Idempotente: ESC + pointerlockchange = una sola pausa
+    if (!this.playing || this.paused || this.inShop || this.inTravel || this.inSleep) return; // Idempotente: ESC + pointerlockchange = una sola pausa
     this.paused = true;
     this.setActiveControls(false);
     this.onLockHint(false);
@@ -211,6 +215,28 @@ export class PlaySession {
     return true;
   }
 
+  // ---------- Dormir (Fase 11B) ----------
+
+  /** Empieza a dormir: congela la partida y los controles. Solo desde la partida activa. */
+  startSleep() {
+    if (!this.active || this.inSleep) return false;
+    this.inSleep = true;
+    this.paused = true;
+    this.setActiveControls(false);
+    return true;
+  }
+
+  /** Despierta (haya amanecido o no): se recupera el control. */
+  endSleep() {
+    if (!this.inSleep) return false;
+    this.inSleep = false;
+    if (!this.playing) return true; // Se volvió al menú mientras tanto
+    this.paused = false;
+    this.setActiveControls(true);
+    if (!this.cameraRig.locked) this.onLockHint(true);
+    return true;
+  }
+
   // ---------- Eventos (los conecta Game.js) ----------
 
   pointerDown(button) {
@@ -224,6 +250,7 @@ export class PlaySession {
   }
 
   keyDown(code) {
+    if (this.inSleep) return; // Durmiendo: ninguna tecla hace nada
     if (code === 'Escape') {
       if (this.inShop) this.closeShop();
       else if (this.inTravel) this.closeTravel();
@@ -246,7 +273,7 @@ export class PlaySession {
     // Cursor perdido: nada de ataque ni teclas pulsadas; si se estaba jugando, pausa
     // (en la tienda el cursor se libera a propósito: no es una pausa)
     this.attackHeld = false;
-    if (this.inShop || this.inTravel) return;
+    if (this.inShop || this.inTravel || this.inSleep) return;
     this.player.resetInput();
     this.pause();
   }

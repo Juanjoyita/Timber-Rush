@@ -17,7 +17,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { allFootprints, MAX_SAWMILL_LEVEL, stageColliders } from './sawmillStages.js';
 import { applyForestTheme, createExtraKinds } from './forestThemes.js';
 import { createLandmark, landmarkShape } from './landmarks.js';
-import { TRAVEL } from '../config.js';
+import { REST, TRAVEL } from '../config.js';
+import { createRestSpot } from './restSpot.js';
 
 const MODEL_PATH = '/assets/models/';
 
@@ -56,6 +57,14 @@ const unionRect = (rects) => ({
 });
 // Rectángulo que envuelve el recinto actual y todas las etapas (zona plana)
 export const SAWMILL_EXPANSION = unionRect([SAWMILL_AREAS.compound, ...SAWMILL_STAGE_FOOTPRINTS]);
+
+// Lugar para dormir (Fase 11B): huella de la tienda y la hoguera (caja girada → rectángulo)
+export const REST_FOOTPRINT = (() => {
+  const c = Math.abs(Math.cos(REST.yaw)), s = Math.abs(Math.sin(REST.yaw));
+  const hx = c * 1.45 + s * 2.4, hz = s * 1.45 + c * 2.4; // Medias medidas de la caja de restSpot.js
+  const x = REST.x + Math.sin(REST.yaw) * 0.7, z = REST.z + Math.cos(REST.yaw) * 0.7;
+  return { minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz };
+})();
 
 /** Tipo de suelo bajo un punto: 'wood' sobre el cobertizo o la plataforma, 'grass' en el resto. */
 export function surfaceAt(x, z) {
@@ -220,7 +229,8 @@ export function heightAt(x, z) {
   // Aplanado progresivo: 0 dentro de los claros, ondulación completa a pocos metros
   let flat = Math.min(
     smoothstep(3, terrain.blend, distanceToRect(x, z, SAWMILL_EXPANSION)),
-    smoothstep(3, terrain.blend - 1, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z))
+    smoothstep(3, terrain.blend - 1, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z)),
+    smoothstep(1.5, terrain.blend - 2, distanceToRect(x, z, REST_FOOTPRINT)) // Tienda en suelo plano
   );
   // Elemento emblemático: suelo plano a su alrededor + su propia forma (cuenco, loma…)
   let shape = 0;
@@ -742,7 +752,7 @@ function createSawmill(geometries, logNames, mats) {
   // Obstáculos para la cámara: las piezas sólidas + el volumen del tejado
   const cameraBoxes = [...colliders, { x: SM.x, y: 4.3, z: SM.z, hx: 4.4, hy: 1.0, hz: 3.2 }];
 
-  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes, workerSpots, legacyTable };
+  return { group, setLogPile, logSlots: slots.length, colliders, cameraBoxes, workerSpots, legacyTable, lanternLight };
 }
 
 // ---------- Zonas reservadas ----------
@@ -786,6 +796,7 @@ const STAGE_CLEARANCE = { tree: 2.5, rock: 1, bush: 1.2, plant: 0.4 };
  */
 export function inStageClearing(x, z, radius, kind) {
   const margin = STAGE_CLEARANCE[kind] + radius;
+  if (distanceToRect(x, z, REST_FOOTPRINT) < margin) return true; // Tienda y hoguera (Fase 11B)
   if (distanceToRect(x, z, SAWMILL_EXPANSION) >= margin) return false;
   return SAWMILL_STAGE_FOOTPRINTS.some((f) => distanceToRect(x, z, f) < margin);
 }
@@ -1030,6 +1041,13 @@ export function createForest(config, geometries) {
     for (const g of emblem.owned.geometries) owned.add(g);
   }
   const landmarkColliders = emblem?.colliders ?? { spheres: [], boxes: [] };
+
+  // Lugar para dormir (Fase 11B): igual en todos los bosques, junto al campamento
+  const rest = createRestSpot(REST, mats, heightAt);
+  group.add(rest.group);
+  for (const g of rest.owned.geometries) owned.add(g);
+  sawmill.colliders.push(rest.collider);
+  sawmill.cameraBoxes.push(rest.collider);
 
   // spacing: separación entre árboles/rocas · obstacles: huella física (troncos, rocas, arbustos)
   const spacing = new SpatialGrid(4);
@@ -1305,6 +1323,8 @@ export function createForest(config, geometries) {
     sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
     cameraBoxes: [...sawmill.cameraBoxes, ...(emblem?.cameraBoxes ?? [])], // Cajas que la cámara no atraviesa (aserradero, tejado y árbol emblemático)
     landmark: config.landmark ?? null,
+    restSpot: rest, // Tienda para dormir (Fase 11B): colisión, zona de uso, hoguera y su luz
+    lanternLight: sawmill.lanternLight, // Farol de la plataforma (más intenso de noche)
     landmarkColliders, // Colisiones del elemento emblemático (esferas y cajas orientadas)
     decorColliders, // Cajas de colisión de los troncos caídos (orientadas)
     setLogPile: sawmill.setLogPile, logSlots: sawmill.logSlots, materials: mats,
@@ -1324,7 +1344,7 @@ export function createForest(config, geometries) {
         if (o.geometry && !shared.has(o.geometry)) o.geometry.dispose();
       });
       for (const g of owned) g.dispose();
-      for (const m of [...Object.values(mats), ...extraMaterials, ...(emblem?.owned.materials ?? [])]) m.dispose();
+      for (const m of [...Object.values(mats), ...extraMaterials, ...(emblem?.owned.materials ?? []), ...rest.owned.materials]) m.dispose();
     },
   };
 }

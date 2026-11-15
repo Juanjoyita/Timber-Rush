@@ -68,6 +68,8 @@ export const FORESTS = [
     },
     // Luz del bosque (Fase 11A). El Verde conserva la de siempre.
     light: { sun: 0xfff0d0, sunIntensity: 2.4, ambient: 0xffffff, ambientIntensity: 0.75 },
+    // Noche (Fase 11B): azul profundo
+    night: { sky: 0x1c2b4b, ambient: 0x7d93d6, ambientIntensity: 0.5, moon: 0xc4d5ff, moonIntensity: 0.6 },
     theme: {}, // Sin cambios: los modelos con sus colores originales
   },
 
@@ -110,6 +112,7 @@ export const FORESTS = [
     ],
     colors: { sky: 0xf2cfa0, grass: 0xa59a45, meadow: 0xc7a24a, forestFloor: 0x87552c, hill: 0x9a8645, dirt: 0x9b6a3c },
     light: { sun: 0xffd29a, sunIntensity: 2.3, ambient: 0xffe4c4, ambientIntensity: 0.72 },
+    night: { sky: 0x2e2244, ambient: 0xa286c4, ambientIntensity: 0.5, moon: 0xdcc8ff, moonIntensity: 0.55 }, // Violeta cálido
     theme: {
       foliage: [0xd9661f, 0xe8a531, 0xc23b22, 0xf0c13c, 0xb5501c, 0xe07a26], // Naranja, amarillo y rojo
       bushes: [0xb8471f, 0xd98a2b, 0x9c3a1d],
@@ -153,6 +156,7 @@ export const FORESTS = [
     ],
     colors: { sky: 0xdce7f1, grass: 0xedf2f7, meadow: 0xfbfdff, forestFloor: 0xc6d3e0, hill: 0xe2eaf1, dirt: 0x9a9289 },
     light: { sun: 0xe9f1ff, sunIntensity: 2.0, ambient: 0xd8e6ff, ambientIntensity: 0.85 },
+    night: { sky: 0x2c4064, ambient: 0xb4cbf2, ambientIntensity: 0.68, moon: 0xe2ecff, moonIntensity: 0.8 }, // La nieve refleja la luna
     theme: {
       foliage: [0x2f5d4a, 0x355f55, 0x2a5243], // Verde oscuro frío bajo la nieve
       bushes: [0x3d6656],
@@ -198,6 +202,7 @@ export const FORESTS = [
     ],
     colors: { sky: 0x7d6cb5, grass: 0x3f7a6c, meadow: 0x5b6ea3, forestFloor: 0x2b3d5b, hill: 0x4b5a8c, dirt: 0x6e5a7d },
     light: { sun: 0xd9c8ff, sunIntensity: 1.7, ambient: 0xb7a6ff, ambientIntensity: 0.8 },
+    night: { sky: 0x170f31, ambient: 0x7562c4, ambientIntensity: 0.48, moon: 0xbcaaff, moonIntensity: 0.5 }, // Lo luminoso destaca
     theme: {
       foliage: [0x7b4fd1, 0x2fb6a6, 0xb04fc6, 0x3f8fd8, 0x5f3fb0, 0x27a39a],
       bushes: [0x6a44b8, 0x2a9c95, 0x9a49b8],
@@ -249,6 +254,7 @@ export const FORESTS = [
     ],
     colors: { sky: 0xa8c49c, grass: 0x4c7a33, meadow: 0x5c8a3a, forestFloor: 0x2c4d24, hill: 0x47693a, dirt: 0x7a5a36 },
     light: { sun: 0xfff2c8, sunIntensity: 2.0, ambient: 0xcfe5b8, ambientIntensity: 0.7 },
+    night: { sky: 0x0f2617, ambient: 0x6b9a6e, ambientIntensity: 0.48, moon: 0xd2ecc9, moonIntensity: 0.55 }, // Verdes profundos
     theme: {
       foliage: [0x2f6b2a, 0x3d7d2c, 0x2a5e30, 0x4a8433, 0x34703a],
       bushes: [0x3b7a2e, 0x2f6a34],
@@ -263,6 +269,30 @@ export const FORESTS = [
 
 /** Bosque por id (el Verde si el id no existe). */
 export const forestById = (id) => FORESTS.find((f) => f.id === Number(id)) ?? FORESTS[0];
+
+// ---------- Día y noche (Fase 11B) ----------
+// Ciclo de 20 minutos de gameplay activo. t = segundos desde las 06:00 (ver gameClock.js).
+export const DAY_NIGHT = {
+  cycle: 1200, // s: ciclo completo
+  dawn: 60, // Amanecer 06:00–07:00 (1 min)
+  duskStart: 780, // Atardecer 19:00–20:00 (1 min) — el día dura 07:00–19:00 (12 min)
+  nightStart: 840, // Noche 20:00–06:00 (6 min)
+  lightHourSeconds: 60, // 1 h del juego = 60 s entre las 06:00 y las 20:00 (de noche, 36 s)
+  startHour: 8, // Nueva partida: Día 1 a las 08:00
+  saveDelay: 30000, // ms: el reloj se guarda como mucho cada 30 s (y con cualquier otra escritura)
+  // Tonos del amanecer y del atardecer (se mezclan con los colores de cada bosque)
+  dawnTint: { sky: 0xf4b48a, sun: 0xffb27a },
+  duskTint: { sky: 0xe98a5f, sun: 0xff8f5a },
+  fogNight: 0.82, // La niebla se acerca un poco de noche (más ambiente, nada de negro)
+  campLights: { lantern: [6, 16], fire: 14 }, // Intensidad del farol (día, noche) y de la hoguera de noche
+};
+
+// Lugar para dormir (Fase 11B): tienda con saco y hoguera junto al campamento. E de noche.
+export const REST = {
+  x: -6.8, z: 10.3, // Al oeste del inicio, entre el camino principal y el almacén
+  yaw: -0.5, // La entrada mira hacia el inicio
+  radius: 2.6, // Distancia (m) para poder usarla
+};
 
 // Viajar entre bosques (Fase 11A): poste indicador del campamento (E). Viajar es gratis.
 export const TRAVEL = {
