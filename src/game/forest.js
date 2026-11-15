@@ -17,8 +17,8 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { allFootprints, MAX_SAWMILL_LEVEL, stageColliders } from './sawmillStages.js';
 import { applyForestTheme, createExtraKinds } from './forestThemes.js';
 import { createLandmark, landmarkShape } from './landmarks.js';
-import { CHESTS, REST, TRAVEL } from '../config.js';
-import { createRestSpot } from './restSpot.js';
+import { CHESTS, TRAVEL } from '../config.js';
+import { MAX_HOME_LEVEL, VILLAGE_FOOTPRINTS, villageColliders } from './village.js';
 
 const MODEL_PATH = '/assets/models/';
 
@@ -58,13 +58,19 @@ const unionRect = (rects) => ({
 // Rectángulo que envuelve el recinto actual y todas las etapas (zona plana)
 export const SAWMILL_EXPANSION = unionRect([SAWMILL_AREAS.compound, ...SAWMILL_STAGE_FOOTPRINTS]);
 
-// Lugar para dormir (Fase 11B): huella de la tienda y la hoguera (caja girada → rectángulo)
-export const REST_FOOTPRINT = (() => {
-  const c = Math.abs(Math.cos(REST.yaw)), s = Math.abs(Math.sin(REST.yaw));
-  const hx = c * 1.45 + s * 2.4, hz = s * 1.45 + c * 2.4; // Medias medidas de la caja de restSpot.js
-  const x = REST.x + Math.sin(REST.yaw) * 0.7, z = REST.z + Math.cos(REST.yaw) * 0.7;
-  return { minX: x - hx, maxX: x + hx, minZ: z - hz, maxZ: z + hz };
-})();
+// Aldea (Fase 11D): huellas de TODAS sus piezas (nivel máximo). Se despeja y se aplana desde el
+// principio, en los cinco bosques, para que ninguna compra haga aparecer una casa dentro de un
+// árbol. La vivienda (y el lugar para dormir) está aquí desde el nivel 0.
+export const VILLAGE_AREA = unionRect(VILLAGE_FOOTPRINTS);
+const VILLAGE_BLEND = [1.5, 13]; // m: plano hasta 1,5 m de cada pieza; relieve completo a 13 m
+
+/** 0 junto a las piezas de la aldea, 1 lejos (subida gradual: el suelo físico la sigue bien). */
+function villageFlat(x, z) {
+  if (distanceToRect(x, z, VILLAGE_AREA) >= VILLAGE_BLEND[1]) return 1;
+  let d = Infinity;
+  for (const f of VILLAGE_FOOTPRINTS) d = Math.min(d, distanceToRect(x, z, f));
+  return smoothstep(VILLAGE_BLEND[0], VILLAGE_BLEND[1], d);
+}
 
 /** Tipo de suelo bajo un punto: 'wood' sobre el cobertizo o la plataforma, 'grass' en el resto. */
 export function surfaceAt(x, z) {
@@ -185,6 +191,7 @@ export function setTerrain(config) {
       const h = range(rand, spec.height[0], spec.height[1]), r = range(rand, spec.radius[0], spec.radius[1]);
       // Lejos del campamento y del inicio (allí el suelo es plano)
       if (distanceToRect(x, z, SAWMILL_EXPANSION) < r * 1.5 + 10 || Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) < r * 1.5 + 12) continue;
+      if (distanceToRect(x, z, VILLAGE_AREA) < r * 1.5 + VILLAGE_BLEND[1]) continue; // Ni junto a la aldea (Fase 11D)
       if (features.some((f) => Math.hypot(f.x - x, f.z - z) < (f.r + r) * 0.7)) continue; // Sin amontonarse
       if (landmark && Math.hypot(landmark.x - x, landmark.z - z) < landmark.clear + r * 1.5) continue; // Ni sobre el lago o el árbol
       features.push({ x, z, h, r });
@@ -230,7 +237,7 @@ export function heightAt(x, z) {
   let flat = Math.min(
     smoothstep(3, terrain.blend, distanceToRect(x, z, SAWMILL_EXPANSION)),
     smoothstep(3, terrain.blend - 1, Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z)),
-    smoothstep(1.5, terrain.blend - 2, distanceToRect(x, z, REST_FOOTPRINT)) // Tienda en suelo plano
+    villageFlat(x, z) // Aldea en suelo plano (solo alrededor de sus piezas, con una transición suave)
   );
   // Elemento emblemático: suelo plano a su alrededor + su propia forma (cuenco, loma…)
   let shape = 0;
@@ -796,7 +803,7 @@ const STAGE_CLEARANCE = { tree: 2.5, rock: 1, bush: 1.2, plant: 0.4 };
  */
 export function inStageClearing(x, z, radius, kind) {
   const margin = STAGE_CLEARANCE[kind] + radius;
-  if (distanceToRect(x, z, REST_FOOTPRINT) < margin) return true; // Tienda y hoguera (Fase 11B)
+  if (distanceToRect(x, z, VILLAGE_AREA) < margin + 2 && VILLAGE_FOOTPRINTS.some((f) => distanceToRect(x, z, f) < margin)) return true; // Aldea (Fase 11D)
   if (distanceToRect(x, z, SAWMILL_EXPANSION) >= margin) return false;
   return SAWMILL_STAGE_FOOTPRINTS.some((f) => distanceToRect(x, z, f) < margin);
 }
@@ -1001,7 +1008,7 @@ function createChestSpots(config, { obstacles, landmarkColliders, canReach }) {
   const valid = (x, z) =>
     Math.abs(x) < H && Math.abs(z) < H &&
     distanceToRect(x, z, SAWMILL_EXPANSION) >= CHESTS.minFromCamp &&
-    distanceToRect(x, z, REST_FOOTPRINT) >= CHESTS.minFromCamp &&
+    distanceToRect(x, z, VILLAGE_AREA) >= CHESTS.minFromCamp &&
     Math.hypot(x - WORLD.spawn.x, z - WORLD.spawn.z) >= CHESTS.minFromSpawn &&
     Math.hypot(x - TRAVEL.post.x, z - TRAVEL.post.z) >= CHESTS.minFromCamp &&
     distanceToPaths(x, z) >= CHESTS.minFromPath &&
@@ -1089,13 +1096,6 @@ export function createForest(config, geometries) {
     for (const g of emblem.owned.geometries) owned.add(g);
   }
   const landmarkColliders = emblem?.colliders ?? { spheres: [], boxes: [] };
-
-  // Lugar para dormir (Fase 11B): igual en todos los bosques, junto al campamento
-  const rest = createRestSpot(REST, mats, heightAt);
-  group.add(rest.group);
-  for (const g of rest.owned.geometries) owned.add(g);
-  sawmill.colliders.push(rest.collider);
-  sawmill.cameraBoxes.push(rest.collider);
 
   // spacing: separación entre árboles/rocas · obstacles: huella física (troncos, rocas, arbustos)
   const spacing = new SpatialGrid(4);
@@ -1223,7 +1223,7 @@ export function createForest(config, geometries) {
   // sin ningún punto alcanzable cerca del tronco (nunca habría un árbol imposible de talar).
   // Cuenta con todas las construcciones futuras del aserradero (nivel máximo)
   const canReach = createWalkability({
-    trees, rocks, boxes: [...sawmill.colliders, ...stageColliders(MAX_SAWMILL_LEVEL, SM)],
+    trees, rocks, boxes: [...sawmill.colliders, ...stageColliders(MAX_SAWMILL_LEVEL, SM), ...villageColliders(MAX_HOME_LEVEL, heightAt)],
     decorColliders: [...decorColliders, ...landmarkColliders.boxes.filter((b) => !b.walkable)],
     circles: landmarkColliders.spheres,
   });
@@ -1375,7 +1375,6 @@ export function createForest(config, geometries) {
     sawmillColliders: sawmill.colliders, // Cajas de colisión del aserradero (Fase 5)
     cameraBoxes: [...sawmill.cameraBoxes, ...(emblem?.cameraBoxes ?? [])], // Cajas que la cámara no atraviesa (aserradero, tejado y árbol emblemático)
     landmark: config.landmark ?? null,
-    restSpot: rest, // Tienda para dormir (Fase 11B): colisión, zona de uso, hoguera y su luz
     chestSpots, // Puntos posibles de los cofres (Fase 11C): cada día se usan 4
     lanternLight: sawmill.lanternLight, // Farol de la plataforma (más intenso de noche)
     landmarkColliders, // Colisiones del elemento emblemático (esferas y cajas orientadas)
@@ -1397,7 +1396,7 @@ export function createForest(config, geometries) {
         if (o.geometry && !shared.has(o.geometry)) o.geometry.dispose();
       });
       for (const g of owned) g.dispose();
-      for (const m of [...Object.values(mats), ...extraMaterials, ...(emblem?.owned.materials ?? []), ...rest.owned.materials]) m.dispose();
+      for (const m of [...Object.values(mats), ...extraMaterials, ...(emblem?.owned.materials ?? [])]) m.dispose();
     },
   };
 }

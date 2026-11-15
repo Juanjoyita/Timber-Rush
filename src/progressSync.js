@@ -87,6 +87,10 @@ export function parseChests(raw) {
   return { d, o: [...o], n };
 }
 const NO_CHESTS = Object.freeze({ d: 0, o: [0, 0, 0, 0, 0], n: 0 });
+
+// Mejoras guardadas DENTRO de resources (sin columna en Appwrite): la vivienda (Fase 11D, 0..6)
+const RESOURCE_LEVELS = { home: 6 };
+const validHome = (v) => v === undefined || (Number.isInteger(v) && v >= 0 && v <= RESOURCE_LEVELS.home);
 /** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
 export const INITIAL_PROGRESS = { resources: { backpack: {}, storage: {} } };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -178,7 +182,7 @@ export class ProgressSync {
     this.lastError = null; // Diagnóstico del último error { kind, type, code, message, at }
     this.coins = 0; // Monedas disponibles CONFIRMADAS en Appwrite (fuente de verdad local)
     this.totalCoinsEarned = 0; // Monedas ganadas históricamente (confirmadas)
-    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
+    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0, home: 0 };
     this.forests = { currentForest: 1, unlockedForests: 1 }; // Bosque actual y desbloqueados (Fase 11A)
     this.savedForests = { currentForest: 1, unlockedForests: 1 }; // Lo que hay en Appwrite
     this.opInFlight = false; // Venta o compra en curso (nunca dos a la vez)
@@ -234,6 +238,7 @@ export class ProgressSync {
     // dañado, se protege como el resto de datos (no se sobrescribe)
     if (resources && resources.clock !== undefined && !parseClock(resources.clock)) damaged = true;
     if (resources && resources.chests !== undefined && !parseChests(resources.chests)) damaged = true; // Cofres (Fase 11C)
+    if (resources && !validHome(resources.home)) damaged = true; // Vivienda (Fase 11D): ausente = 0
 
     this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
     backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
@@ -254,6 +259,7 @@ export class ProgressSync {
       backpackLevel: profile.backpackLevel ?? 1,
       workers: profile.workers ?? 0,
       sawmillLevel: profile.sawmillLevel ?? 0,
+      home: resources && validHome(resources.home) ? resources.home ?? 0 : 0, // Vivienda (cosmética)
     };
     // Bosques: el desbloqueo depende de las monedas HISTÓRICAS (nunca baja). Si la columna se
     // quedó atrás (perfil anterior a la Fase 11A), cuenta lo que corresponda; se guardará con la
@@ -616,7 +622,7 @@ export class ProgressSync {
     this.coins = 0;
     this.totalCoinsEarned = 0;
     this.totalWood = 0;
-    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0 };
+    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0, home: 0 };
     this.forests = { currentForest: 1, unlockedForests: 1 };
     this.savedForests = { currentForest: 1, unlockedForests: 1 };
     this.base = JSON.parse(data.resources);
@@ -705,7 +711,10 @@ export class ProgressSync {
     if (!offer) return { error: 'no-disponible' };
     if (offer.maxed) return { error: 'nivel-máximo' };
     if (this.coins < offer.cost) return { error: 'saldo-insuficiente' };
-    const data = { ...this.snapshot(), coins: this.coins - offer.cost, [offer.column]: offer.level };
+    // La vivienda se guarda dentro de resources; el resto de mejoras, en su columna
+    const data = offer.column in RESOURCE_LEVELS
+      ? { resources: JSON.stringify({ ...this.base, [offer.column]: offer.level, backpack: this.backpack.toJSON() }), totalWoodCollected: this.totalWood, coins: this.coins - offer.cost }
+      : { ...this.snapshot(), coins: this.coins - offer.cost, [offer.column]: offer.level };
     const op = { kind: 'purchase', id: ++this.saleSeq, key, column: offer.column, level: offer.level, cost: offer.cost, done: false };
     return { data, op };
   }
@@ -714,6 +723,7 @@ export class ProgressSync {
   applyPurchase(op, data) {
     this.coins = data.coins; // totalCoinsEarned no cambia al gastar
     this.levels = { ...this.levels, [op.column]: op.level };
+    if (op.column in RESOURCE_LEVELS) this.base = { ...this.base, [op.column]: op.level };
     if (op.column === 'backpackLevel') {
       this.restoring = true; // Ya está guardado: no es un cambio pendiente
       this.backpack.setLevel(op.level);

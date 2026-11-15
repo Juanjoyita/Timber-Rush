@@ -4,6 +4,8 @@
 
 const $ = (id) => document.getElementById(id);
 
+import { UPGRADES } from './config.js';
+
 // ---------- Navegación entre pantallas ----------
 /** Muestra una sola pantalla (<section class="screen">) y oculta las demás. */
 export function showScreen(name) {
@@ -136,6 +138,7 @@ export function renderStats(st) {
   $('st-forests').textContent = `${st.currentForestName ?? st.currentForest} · ${st.unlockedForests}/5 desbloqueados`;
   $('st-clock').textContent = st.clockText ?? `Día ${st.gameClock?.d ?? 1}`;
   $('st-chests').textContent = formatNumber(st.chestsOpened ?? 0);
+  $('st-home').textContent = `Nivel ${st.home ?? 0} · ${UPGRADES.home.stages[st.home ?? 0]}`;
 }
 
 /** Controles de configuración con los valores actuales. */
@@ -439,6 +442,7 @@ export function renderShop(items, coins, busyKey = null) {
         return el;
       };
       card.append(line('shop-card-name', item.name));
+      if (item.cosmetic) card.append(line('shop-cosmetic-tag', 'Solo decorativo'));
       card.append(line('shop-card-level', item.maxed ? `Nivel ${item.level} · máximo` : `Nivel ${item.level} → ${item.nextLevel}`));
       const effect = document.createElement('p');
       effect.className = 'shop-card-effect';
@@ -650,6 +654,21 @@ export const chestBanner = {
     $('chest-banner-title').textContent = 'No se guardó';
     $('chest-banner-amount').textContent = 'El cofre sigue cerrado';
     chestBannerTimer = setTimeout(() => el.classList.add('hidden'), 2600);
+  },
+};
+
+// ---------- Aldea (Fase 11D) ----------
+
+/** Celebración de la mejora de la vivienda (solo tras confirmarse la compra). */
+export const villageBanner = {
+  show(level) {
+    const el = $('chest-banner');
+    clearTimeout(chestBannerTimer);
+    el.className = 'chest-banner is-aldea';
+    $('chest-banner-title').textContent = '¡TU ALDEA HA CRECIDO!';
+    $('chest-banner-amount').textContent = `Vivienda nivel ${level}`;
+    restartClass(el, 'is-entering');
+    chestBannerTimer = setTimeout(() => el.classList.add('hidden'), 3000);
   },
 };
 

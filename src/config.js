@@ -287,12 +287,7 @@ export const DAY_NIGHT = {
   campLights: { lantern: [6, 16], fire: 14 }, // Intensidad del farol (día, noche) y de la hoguera de noche
 };
 
-// Lugar para dormir (Fase 11B): tienda con saco y hoguera junto al campamento. E de noche.
-export const REST = {
-  x: -6.8, z: 10.3, // Al oeste del inicio, entre el camino principal y el almacén
-  yaw: -0.5, // La entrada mira hacia el inicio
-  radius: 2.6, // Distancia (m) para poder usarla
-};
+// Lugar para dormir: la vivienda de la aldea (Fase 11D, village.js). La E está en su puerta.
 
 // ---------- Cofres y tesoros (Fase 11C) ----------
 // 4 cofres por bosque y día del juego (se renuevan a las 06:00). Solo dan monedas de oro: suman
@@ -352,14 +347,22 @@ export const UPGRADES = {
     name: 'Aserradero',
     costs: { 1: 2000, 2: 5000, 3: 10000, 4: 20000, 5: 40000, 6: 75000, 7: 125000, 8: 200000, 9: 350000, 10: 500000 },
   },
+  // Vivienda y aldea (Fase 11D): 100 % COSMÉTICA. No da ninguna ventaja (ver village.js).
+  home: {
+    name: 'Vivienda',
+    cosmetic: true,
+    costs: { 1: 1500, 2: 5000, 3: 15000, 4: 40000, 5: 100000, 6: 250000 },
+    stages: ['Tienda de campaña', 'Campamento acogedor', 'Cabaña con huerto', 'Cabaña con porche', 'Casa de dos plantas', 'Pequeña aldea', 'Aldea forestal'],
+  },
 };
 
 // Tienda (Fase 8): se abre con B en cualquier lugar. Qué se puede comprar y en qué columna
 // de la fila de progreso se guarda cada mejora. Trabajadores desde la Fase 9.
 export const SHOP = {
   key: 'KeyB',
-  purchasable: ['axe', 'backpack', 'workers', 'sawmill'],
-  columns: { axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers' },
+  purchasable: ['axe', 'backpack', 'workers', 'sawmill', 'home'],
+  // home se guarda dentro de resources (sin columna nueva en Appwrite)
+  columns: { axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers', home: 'home' },
 };
 
 export const ECONOMY = {
@@ -456,5 +459,6 @@ export const AUDIO = {
     chest_coins_small: { file: 'chest_coins_small.wav', ui: true, volume: 0.45 }, // Común
     chest_coins: { file: 'chest_coins.wav', ui: true, volume: 0.5 }, // Raro
     chest_treasure: { file: 'chest_treasure.wav', ui: true, volume: 0.55 }, // Legendario
+    village_build: { file: 'village_build.wav', ui: true, volume: 0.5 }, // La aldea ha crecido (Fase 11D)
   },
 };

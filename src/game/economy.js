@@ -118,7 +118,10 @@ export function saleValue(contents, sawmillLevel = 0) {
  * @param levels { axeLevel, backpackLevel, workers, sawmillLevel }
  * @returns { key, name, level, cost } o null si ya se tiene todo
  */
-export function nextUpgrade(levels = {}, keys = SHOP.purchasable) {
+/** Mejoras con efecto en el juego (la vivienda es cosmética: no cuenta como «siguiente mejora»). */
+export const FUNCTIONAL_UPGRADES = SHOP.purchasable.filter((k) => !UPGRADES[k].cosmetic);
+
+export function nextUpgrade(levels = {}, keys = FUNCTIONAL_UPGRADES) {
   const current = {
     axe: levels.axeLevel ?? 1,
     backpack: levels.backpackLevel ?? 1,
@@ -148,6 +151,7 @@ export function upgradeEffect(key, level, levels = {}) {
   if (key === 'axe') return `Daño ${AXE_LEVELS[level - 1]?.damage ?? '?'} por golpe`;
   if (key === 'backpack') return `${BACKPACK.capacities[level - 1] ?? '?'} unidades`;
   if (key === 'sawmill') return `+${Math.round(ECONOMY.sawmillBonusPerLevel * level * 100)} % al vender · ${decimal(productionStats(level).perMinute)} maderas/min por trabajador`;
+  if (key === 'home') return UPGRADES.home.stages[level] ?? ''; // Solo el aspecto: ningún efecto
   if (key === 'workers') {
     if (level === 0) return 'Sin trabajadores';
     // Con el nivel actual del aserradero: lote de cada trabajador y su ciclo
@@ -189,6 +193,7 @@ export function shopItems(levels = {}, coins = 0) {
       effect: upgradeEffect(key, current, levels),
       nextEffect: maxed ? null : upgradeEffect(key, next, levels),
       available, // Los trabajadores aún no (Fase 9)
+      cosmetic: Boolean(upgrade.cosmetic), // Vivienda: «Solo decorativo»
       maxed,
       affordable: available && !maxed && coins >= cost,
       missing: available && !maxed ? Math.max(0, cost - coins) : 0,

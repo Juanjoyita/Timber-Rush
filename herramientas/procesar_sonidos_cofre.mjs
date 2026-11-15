@@ -7,6 +7,7 @@
 //   chest_coins_small.wav  tintineo corto de monedas (cofre común)
 //   chest_coins.wav        tintineo más rico (cofre raro)
 //   chest_treasure.wav     lluvia de monedas con una campana brillante (tesoro legendario)
+//   village_build.wav      (Fase 11D) tres martillazos sobre madera y una campanita: la aldea ha crecido
 // Las monedas son golpes cortos de cristal, placa y metal subidos de tono (más agudos y cortos:
 // suenan a monedas), repartidos en el tiempo con volumen decreciente. Todo es determinista.
 // Al final se iguala la sonoridad (RMS) con el pico limitado: solo cambia la ganancia.
@@ -116,6 +117,14 @@ const sounds = {
     mix(d, load('impactBell_heavy_003'), { at: 0.22, pitch: 2.0, gain: 0.35, length: 1.0, fade: 0.7 });
     coins(d, { from: 0.05, count: 24, span: 1.1 });
     coins(d, { from: 0.2, count: 10, span: 0.9, gain: 0.55 });
+  } },
+  // Mejora de la aldea: martillo sobre madera (tres golpes) y una campanita discreta al final
+  village_build: { length: 1.25, rms: -19, build(d) {
+    [0, 0.2, 0.4].forEach((t, i) => {
+      mix(d, load(`impactWood_medium_00${i + 1}`), { at: t, pitch: 1.15 - i * 0.05, gain: 0.85, length: 0.18, fade: 0.08 });
+      mix(d, load('impactMetal_light_001'), { at: t + 0.005, pitch: 1.8, gain: 0.18, length: 0.05, fade: 0.03 });
+    });
+    mix(d, load('impactBell_heavy_002'), { at: 0.62, pitch: 2.2, gain: 0.32, length: 0.6, fade: 0.45 });
   } },
 };
 

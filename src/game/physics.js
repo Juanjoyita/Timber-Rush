@@ -75,7 +75,12 @@ export function createPhysics(forest) {
     data.push(column);
   }
   const ground = new CANNON.Body({ mass: 0, material: materials.ground });
-  ground.addShape(new CANNON.Heightfield(data, { elementSize: TERRAIN_STEP }));
+  const field = new CANNON.Heightfield(data, { elementSize: TERRAIN_STEP });
+  ground.addShape(field);
+  // Altura del SUELO FÍSICO (rejilla de 2,5 m interpolada), no la del terreno exacto: en las zonas
+  // curvas difieren unos centímetros. Las esferas de troncos y rocas se centran a la altura del
+  // personaje sobre este mismo suelo, así el choque es siempre horizontal (sin hundirse ni subirse).
+  const groundY = (x, z) => field.getHeightAt(x + TERRAIN_HALF, TERRAIN_HALF - z, true);
   ground.position.set(-TERRAIN_HALF, 0, TERRAIN_HALF);
   ground.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
   world.addBody(ground);
@@ -97,7 +102,7 @@ export function createPhysics(forest) {
   };
   const obstacleSphere = (x, z, radius) => {
     const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
-    body.position.set(x, heightAt(x, z) + PLAYER_RADIUS, z);
+    body.position.set(x, groundY(x, z) + PLAYER_RADIUS, z);
     addObstacleShapes(body, radius); // Formas DESPUÉS de colocarlo (AABB correcta)
     world.addBody(body);
     return body;
@@ -109,7 +114,7 @@ export function createPhysics(forest) {
   for (const tree of forest.trees) {
     const { x, z } = tree.position;
     const body = new CANNON.Body({ mass: 0, material: materials.obstacle });
-    body.position.set(x, heightAt(x, z) + PLAYER_RADIUS, z);
+    body.position.set(x, groundY(x, z) + PLAYER_RADIUS, z);
     addObstacleShapes(body, tree.userData.radius); // Formas DESPUÉS de colocarlo (AABB correcta)
     tree.userData.body = body;
     const key = `${Math.floor(x / TRUNK_CELL)},${Math.floor(z / TRUNK_CELL)}`;

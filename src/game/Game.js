@@ -33,13 +33,14 @@ import { ForestAmbience } from './forestAmbience.js';
 import { GameClock, START_CLOCK } from './gameClock.js';
 import { lightingAt, NightSky } from './dayNight.js';
 import { ChestField } from './chests.js';
+import { clampHome, Village, VILLAGE_HOME } from './village.js';
 
 // Sombras: el área cubre solo los alrededores del personaje. Así un mapa de
 // 2048 px da sombras nítidas y el pase de sombras solo dibuja los objetos cercanos.
 const SHADOW_HALF = 32; // Área de sombras: 64 × 64 m
 const SHADOW_MAP = 2048;
 const SUN_DISTANCE = 60; // Distancia del sol/luna al centro de las sombras (m)
-const REST_REACH = 1.2; // Distancia (m) a la tienda para poder dormir
+const REST_REACH = 1.6; // Distancia (m) a la puerta de la vivienda para poder dormir
 
 // Cámara en tercera persona: ver ThirdPersonCamera.js (encuadre, sensibilidad, zoom y límites)
 const CAMERA_FOV = 65;
@@ -92,6 +93,10 @@ export class Game {
     this.chestPrompt = null;
     this.clock.onNewDay(() => this.refreshChests()); // A las 06:00: los cofres del nuevo día
 
+    // ---------- Vivienda y aldea (Fase 11D): solo visual ----------
+    this.homeLevel = 0; // Nivel CONFIRMADO (main.js lo fija con setHomeLevel)
+    this.village = null;
+
     // ---------- Escena ----------
     // THREE.Scene es el contenedor de todos los objetos, luces y cámara.
     this.scene = new THREE.Scene();
@@ -118,8 +123,12 @@ export class Game {
 
     // ---------- Cámara en tercera persona (ratón con Pointer Lock + rueda) ----------
     this.cameraRig = new ThirdPersonCamera(this.camera, this.renderer.domElement, { heightAt });
-    // Cámara del menú principal: órbita alrededor del aserradero (Fase 10)
-    this.menuCamera = new MenuCamera(this.camera, WORLD.sawmill);
+    // Cámara del menú principal: órbita entre el aserradero (Fase 10) y la aldea (Fase 11D),
+    // para que ambos (incluido el molino de la aldea completa) queden en cuadro
+    this.menuCamera = new MenuCamera(this.camera, {
+      x: (WORLD.sawmill.x + VILLAGE_HOME.x) / 2,
+      z: (WORLD.sawmill.z + VILLAGE_HOME.z) / 2,
+    });
     this.enterPose = { position: new THREE.Vector3(), target: new THREE.Vector3() }; // Reutilizable
 
     this.createLights();
@@ -339,6 +348,11 @@ export class Game {
     this.cameraRig.obstacles = new CameraObstacles({ trees: this.forest.trees, boxes: this.forest.cameraBoxes, heightAt });
     this.cameraRig.placeBehind(this.player.position, yaw);
 
+    // Aldea (la misma en los cinco bosques) con el nivel de vivienda comprado. Solo visual.
+    this.village = new Village({ material: this.forest.materials.nature, ground: heightAt, physics: this.physics, cameraBoxes: this.forest.cameraBoxes });
+    this.village.setLevel(this.homeLevel ?? 0);
+    this.scene.add(this.village.group);
+
     // Cofres del día en este bosque
     this.chestField = new ChestField({ forestId: config.id, spots: this.forest.chestSpots ?? [], material: this.forest.materials.nature, physics: this.physics });
     this.scene.add(this.chestField.group);
@@ -448,7 +462,7 @@ export class Game {
     this.nightSky?.update(this.camera, L);
     const [lanternDay, lanternNight] = DAY_NIGHT.campLights.lantern;
     if (this.forest.lanternLight) this.forest.lanternLight.intensity = lanternDay + (lanternNight - lanternDay) * L.night;
-    this.forest.restSpot?.update(dt, L.night, DAY_NIGHT.campLights.fire);
+    this.village?.update(dt, L.night, DAY_NIGHT.campLights.fire); // Hoguera, ventanas, farolas, humo y molino
     this.sawmillStages?.setWindowGlow(L.night);
     const text = this.clock.format();
     const night = this.clock.isNight;
@@ -459,12 +473,28 @@ export class Game {
     }
   }
 
-  /** Distancia (XZ) del Worker a la tienda (a su caja). */
+  /** Distancia (XZ) del Worker a la puerta de la vivienda (la misma regla en todos los niveles). */
   restDistance() {
-    const r = this.forest?.restSpot?.collider;
-    if (!r) return Infinity;
-    const p = this.player.position;
-    return Math.hypot(Math.max(Math.abs(p.x - r.x) - r.hx, 0), Math.max(Math.abs(p.z - r.z) - r.hz, 0));
+    const d = this.village?.door;
+    if (!d) return Infinity;
+    return Math.hypot(this.player.position.x - d.x, this.player.position.z - d.z);
+  }
+
+  /**
+   * Nivel de vivienda CONFIRMADO por Appwrite (al cargar o tras comprarlo). Solo cambia el
+   * aspecto de la aldea: ningún sistema del juego lee este nivel.
+   */
+  setHomeLevel(level) {
+    this.homeLevel = clampHome(level);
+    this.village?.setLevel(this.homeLevel);
+  }
+
+  /** Celebración de una mejora de la aldea (solo visual): monedas saltando junto a la puerta. */
+  villageCelebration() {
+    const d = this.village?.door;
+    if (!d) return;
+    const origin = new THREE.Vector3(d.x, heightAt(d.x, d.z) + 1.2, d.z - 1.5);
+    for (let i = 0; i < 3; i++) setTimeout(() => this.saleCelebration.burst(origin), i * 200);
   }
 
   /**
@@ -536,6 +566,8 @@ export class Game {
     this.sawmillStages.dispose();
     this.chestField?.dispose();
     this.chestField = null;
+    this.village?.dispose();
+    this.village = null;
     if (this.chestPrompt) this.onChestPromptChange?.(null);
     this.chestPrompt = null;
     this.ambience?.dispose();
@@ -866,6 +898,7 @@ export class Game {
     this.resetWorld(); // Bosque, madera del suelo y posición: nada de la cuenta anterior
     this.setWorkerCount(0);
     this.setSawmillLevel(0);
+    this.setHomeLevel(0);
     this.setClock(START_CLOCK);
     this.setForest(1); // La siguiente cuenta empieza viendo el Bosque Verde hasta cargar el suyo
   }

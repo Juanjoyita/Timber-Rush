@@ -333,14 +333,20 @@ sync.onPurchase = (purchase) => {
     game.setSawmillLevel(purchase.level); // Nuevas construcciones y trabajadores más productivos
     renderStorage();
   }
+  if (purchase.key === 'home') {
+    // Vivienda (Fase 11D): SOLO el aspecto de la aldea. Ningún sistema del juego lee este nivel.
+    game.setHomeLevel(purchase.level);
+    game.villageCelebration();
+    ui.villageBanner.show(purchase.level);
+  }
   ui.coinCounter.animateTo(purchase.coins);
   ui.renderUpgradeProgress(nextUpgrade(sync.levels), purchase.coins);
   ui.updateMenuCoins(purchase.coins, sync.totalCoinsEarned);
   renderShop();
   ui.flashShopCard(purchase.key);
   const item = shopItems(purchase.levels, purchase.coins).find((i) => i.key === purchase.key);
-  ui.showShopMessage(`¡${item.name} nivel ${purchase.level}! ${item.effect}.`);
-  game.audio.playUi('sale_levelup'); // Sonido de recompensa ya integrado (Level Up 06)
+  ui.showShopMessage(purchase.key === 'home' ? `¡Tu aldea ha crecido! ${item.effect} (solo decorativo).` : `¡${item.name} nivel ${purchase.level}! ${item.effect}.`);
+  game.audio.playUi(purchase.key === 'home' ? 'village_build' : 'sale_levelup');
 };
 sync.onPurchaseFailed = ({ reason }) => {
   ui.showShopMessage(`La compra no se completó (${reason}). No se ha cobrado nada.`, true);
@@ -401,6 +407,7 @@ function applyProgressToGame() {
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
   game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
   game.setClock(sync.gameClock); // Día y hora guardados (Fase 11B)
+  game.setHomeLevel(sync.levels.home ?? 0); // Aldea del nivel comprado (Fase 11D, solo visual)
   game.refreshChests(); // Cofres del día con los ya abiertos (Fase 11C)
   sync.warmUp(); // Comprobación de seguridad de la sesión ya, no en la primera operación
   // Bosque guardado (Fase 11A): se construye en segundo plano; Continuar espera a que esté listo
