@@ -424,12 +424,32 @@ export function showShop(open) {
   if (open) showShopMessage('');
 }
 
+export function shopTab() {
+  return $('shop-skins').classList.contains('hidden') ? 'upgrades' : 'skins';
+}
+
+export function setShopTab(tab) {
+  const skins = tab === 'skins';
+  $('shop-upgrades').classList.toggle('hidden', skins);
+  $('shop-skins').classList.toggle('hidden', !skins);
+  document.querySelectorAll('[data-shop-tab]').forEach((button) => {
+    const active = button.dataset.shopTab === tab;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+}
+
 /**
  * Dibuja las tarjetas de la tienda (datos de economy.shopItems con el saldo CONFIRMADO).
  * @param busyKey mejora que se está comprando (su botón muestra "Comprando…" y nada se puede pulsar)
  */
-export function renderShop(items, coins, busyKey = null) {
+export function renderShop(items, coins, busyKey = null, selectedSkinId = 'worker') {
   $('shop-coins').textContent = formatNumber(coins);
+  renderUpgradeItems(items.filter((item) => !item.isSkin), busyKey);
+  renderSkinItems(items.filter((item) => item.isSkin), coins, busyKey, selectedSkinId);
+}
+
+function renderUpgradeItems(items, busyKey) {
   const box = $('shop-items');
   box.replaceChildren(
     ...items.map((item) => {
@@ -474,6 +494,55 @@ export function renderShop(items, coins, busyKey = null) {
   );
 }
 
+function renderSkinItems(items, coins, busyKey, selectedSkinId) {
+  const grid = $('skin-grid');
+  const selected = items.find((item) => item.skinId === selectedSkinId) ?? items[0];
+  grid.replaceChildren(...items.map((item) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `skin-choice${item.skinId === selected.skinId ? ' is-selected' : ''}${item.equipped ? ' is-equipped' : ''}`;
+    button.dataset.selectSkin = item.skinId;
+    button.setAttribute('aria-pressed', String(item.skinId === selected.skinId));
+    const name = document.createElement('span');
+    name.className = 'skin-choice-name';
+    name.textContent = item.name;
+    const state = document.createElement('span');
+    state.className = 'skin-choice-state';
+    state.textContent = item.equipped ? 'En uso' : item.owned ? 'Desbloqueada' : `${formatNumber(item.cost)} monedas`;
+    button.append(name, state);
+    return button;
+  }));
+
+  const details = $('skin-details');
+  details.replaceChildren();
+  const title = document.createElement('h3');
+  title.className = 'skin-detail-name';
+  title.textContent = selected.name;
+  const description = document.createElement('p');
+  description.className = 'skin-detail-state';
+  description.textContent = selected.equipped ? 'Apariencia equipada' : selected.owned ? 'Lista para usar' : 'Desbloquea esta apariencia';
+  const action = document.createElement('button');
+  action.type = 'button';
+  action.className = `btn ${selected.owned ? 'btn-secondary' : 'btn-primary'} btn-small skin-action`;
+  action.disabled = Boolean(busyKey) || (!selected.owned && !selected.affordable) || selected.equipped;
+  if (selected.equipped) {
+    action.textContent = 'En uso';
+  } else if (selected.owned) {
+    action.dataset.equip = selected.skinId;
+    action.textContent = busyKey === 'equip' ? 'Equipando…' : 'Equipar';
+  } else {
+    action.dataset.buy = selected.key;
+    action.textContent = busyKey === selected.key ? 'Comprando…' : `Comprar · ${formatNumber(selected.cost)}`;
+  }
+  details.append(title, description, action);
+  if (!selected.owned && selected.missing > 0) {
+    const missing = document.createElement('p');
+    missing.className = 'skin-detail-missing';
+    missing.textContent = `Te faltan ${formatNumber(selected.missing)} monedas`;
+    details.append(missing);
+  }
+}
+
 /** Mensaje bajo las tarjetas (compra realizada o motivo por el que no se pudo). */
 export function showShopMessage(text, error = false) {
   const el = $('shop-message');
@@ -483,13 +552,29 @@ export function showShopMessage(text, error = false) {
 
 /** Destello de la tarjeta recién comprada. */
 export function flashShopCard(key) {
-  const card = $('shop-items').querySelector(`[data-key="${key}"]`);
+  const card = $('shop-items').querySelector(`[data-key="${key}"]`) ?? $('skin-grid').querySelector(`[data-select-skin="${key.replace('skin_', '')}"]`);
   if (card) restartClass(card, 'is-bought');
 }
 
 /** Conecta los botones de la tienda (comprar delegando en el contenedor, y cerrar). */
-export function bindShopEvents({ onBuy, onClose }) {
-  $('shop-items').addEventListener('click', (e) => {
+export function bindShopEvents({ onBuy, onEquip, onSelectSkin, onTab, onClose }) {
+  $('shop').addEventListener('click', (e) => {
+    const tab = e.target.closest('[data-shop-tab]');
+    if (tab) {
+      setShopTab(tab.dataset.shopTab);
+      onTab?.(tab.dataset.shopTab);
+      return;
+    }
+    const selection = e.target.closest('[data-select-skin]');
+    if (selection) {
+      onSelectSkin?.(selection.dataset.selectSkin);
+      return;
+    }
+    const equip = e.target.closest('[data-equip]');
+    if (equip && !equip.disabled) {
+      onEquip(equip.dataset.equip);
+      return;
+    }
     const button = e.target.closest('[data-buy]');
     if (button && !button.disabled) onBuy(button.dataset.buy);
   });

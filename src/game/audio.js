@@ -138,6 +138,10 @@ export class AudioManager {
     const source = this.pool.find((s) => !s.isPlaying) ?? this.pool.reduce((a, b) => (a.lastStart <= b.lastStart ? a : b));
     if (source.isPlaying) source.stop();
 
+    source.setDistanceModel(cfg.distanceModel ?? 'inverse');
+    source.setRefDistance(cfg.refDistance ?? this.config.refDistance);
+    source.setRolloffFactor(cfg.rolloffFactor ?? this.config.rolloffFactor);
+    source.setMaxDistance(cfg.maxDistance ?? this.config.maxDistance);
     source.position.copy(position);
     source.updateMatrixWorld(true); // Coloca el panner ya, sin esperar al siguiente fotograma
     source.setBuffer(buffer);

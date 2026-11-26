@@ -258,12 +258,24 @@
             <p class="shop-balance">Saldo: <strong id="shop-coins">0</strong> monedas</p>
             <button type="button" id="btn-shop-close" class="btn btn-secondary btn-small" aria-label="Cerrar la tienda">Cerrar ✕</button>
           </header>
-          <div id="shop-items" class="shop-items"></div>
-          <div class="shop-soon">
-            <div class="shop-card is-locked"><p class="shop-card-name">Ropa del Worker</p><p class="shop-card-effect">Cascos, chalecos, botas y más</p><p class="shop-soon-tag">Próximamente</p></div>
-          </div>
+          <nav class="shop-tabs" role="tablist" aria-label="Secciones de la tienda">
+            <button type="button" class="shop-tab is-active" role="tab" aria-selected="true" data-shop-tab="upgrades">Mejoras</button>
+            <button type="button" class="shop-tab" role="tab" aria-selected="false" data-shop-tab="skins">Skins</button>
+          </nav>
+          <section id="shop-upgrades" class="shop-upgrades" role="tabpanel">
+            <div id="shop-items" class="shop-items"></div>
+          </section>
+          <section id="shop-skins" class="shop-skins hidden" role="tabpanel">
+            <div class="skin-shop-layout">
+              <div id="skin-preview" class="skin-preview" role="img" aria-label="Vista previa 3D del personaje"></div>
+              <div class="skin-selector">
+                <div id="skin-grid" class="skin-grid"></div>
+                <div id="skin-details" class="skin-details" aria-live="polite"></div>
+              </div>
+            </div>
+          </section>
           <p id="shop-message" class="shop-message" role="status" aria-live="polite"></p>
-          <p class="shop-hint"><kbd>B</kbd> o <kbd>ESC</kbd> para cerrar · Las mejoras se guardan en tu cuenta</p>
+          <p class="shop-hint"><kbd>B</kbd> o <kbd>ESC</kbd> para cerrar · Las compras se guardan en tu cuenta</p>
         </div>
       </div>
 

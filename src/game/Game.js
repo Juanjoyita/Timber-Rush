@@ -840,6 +840,11 @@ export class Game {
     if (this.player.axeSocket) this.player.equipAxe(this.axeLevel);
   }
 
+  /** Apariencia del personaje confirmada por el progreso del jugador. */
+  setCharacterSkin(id) {
+    return this.player.setSkin(id);
+  }
+
   /** Trabajadores contratados (0..2): los muestra en el aserradero y producen madera. */
   setWorkerCount(n) {
     this.workerCount = Math.max(0, Math.min(2, Math.floor(n) || 0));
@@ -897,6 +902,7 @@ export class Game {
   resetPlayerData() {
     this.backpack.clear();
     this.resetWorld(); // Bosque, madera del suelo y posición: nada de la cuenta anterior
+    this.setCharacterSkin('worker');
     this.setWorkerCount(0);
     this.setSawmillLevel(0);
     this.setHomeLevel(0);

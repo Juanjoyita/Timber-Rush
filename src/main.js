@@ -10,6 +10,7 @@
 //          Configuración (en este navegador) y Cerrar sesión.
 import './style.css';
 import { Game } from './game/Game.js';
+import { SkinPreview } from './game/SkinPreview.js';
 import * as api from './appwrite.js';
 import * as ui from './ui.js';
 import { ProgressSync, SAVE_STATUS } from './progressSync.js';
@@ -22,6 +23,7 @@ import { Settings } from './settings.js';
 // vista cinematográfica (sin gameplay: el juego solo se simula al pulsar Continuar).
 const game = new Game(document.getElementById('game-container'));
 game.start();
+const skinPreview = new SkinPreview(document.getElementById('skin-preview'));
 
 // Configuración del navegador (Fase 10): se aplica al instante y se conserva al recargar
 const settings = new Settings();
@@ -47,6 +49,18 @@ const sync = new ProgressSync({
   productionDelay: WORKERS.saveDelay, // La producción se guarda como mucho cada 30 s
 });
 sync.onStatus = ui.showSaveStatus;
+sync.onSkinChange = (id) => {
+  selectedSkinId = id;
+  if (ui.shopTab() === 'skins') skinPreview.show(id);
+  game.setCharacterSkin(id).then((loaded) => {
+    if (!loaded) ui.showShopMessage('No se pudo cargar esa apariencia.', true);
+    else renderShop();
+  }).catch((error) => {
+    console.error(error);
+    ui.showShopMessage('No se pudo cargar esa apariencia.', true);
+  });
+};
+sync.onSkinChangeFailed = ({ reason }) => ui.showShopMessage(`No se pudo equipar la apariencia (${reason}).`, true);
 
 // ---------- Venta (Fase 7B) ----------
 // La fuente de verdad es el saldo CONFIRMADO (sync.coins). El contador animado solo lo muestra.
@@ -290,7 +304,8 @@ sync.onChestFailed = ({ reason }) => ui.showSaleMessage(`No se pudo guardar el c
 // Los datos de las tarjetas salen siempre del saldo y los niveles CONFIRMADOS (sync).
 // Comprar no cambia nada en el juego hasta que Appwrite confirma la compra (onPurchase).
 let shopBusy = null; // Mejora que se está comprando
-const renderShop = () => ui.renderShop(shopItems(sync.levels, sync.coins), sync.coins, shopBusy);
+let selectedSkinId = 'worker';
+const renderShop = () => ui.renderShop(shopItems(sync.levels, sync.coins), sync.coins, shopBusy, selectedSkinId);
 const PURCHASE_MESSAGES = {
   'saldo-insuficiente': 'No tienes monedas suficientes.',
   'nivel-máximo': 'Esa mejora ya está al máximo.',
@@ -303,10 +318,45 @@ const PURCHASE_MESSAGES = {
 };
 game.onShopChange = (open) => {
   ui.showShop(open);
-  if (open) renderShop();
+  skinPreview.setVisible(open && ui.shopTab() === 'skins');
+  if (open) {
+    renderShop();
+    if (ui.shopTab() === 'skins') skinPreview.show(selectedSkinId);
+  }
 };
 ui.bindShopEvents({
   onClose: () => game.closeShop(), // Clic del usuario: permite volver a capturar el cursor
+  onTab: (tab) => {
+    const visible = tab === 'skins' && !document.getElementById('shop').classList.contains('hidden');
+    skinPreview.setVisible(visible);
+    if (visible) skinPreview.show(selectedSkinId);
+  },
+  onSelectSkin: (id) => {
+    selectedSkinId = id;
+    renderShop();
+    skinPreview.show(id).catch((error) => {
+      console.error(error);
+      ui.showShopMessage('No se pudo cargar la vista de esta apariencia.', true);
+    });
+  },
+  onEquip: async (id) => {
+    if (shopBusy) return;
+    shopBusy = 'equip';
+    renderShop();
+    const result = await sync.equipSkin(id);
+    shopBusy = null;
+    renderShop();
+    if (!result.ok) {
+      const message = result.pending
+        ? 'Sin respuesta de Appwrite: comprobando si el cambio se guardó…'
+        : result.reason === 'apariencia-no-desbloqueada'
+          ? 'Primero debes comprar esa apariencia.'
+          : 'No se pudo equipar la apariencia. No se guardaron cambios.';
+      ui.showShopMessage(message, true);
+    } else {
+      ui.showShopMessage('Apariencia equipada.');
+    }
+  },
   onBuy: async (key) => {
     if (shopBusy) return;
     shopBusy = key;
@@ -346,7 +396,11 @@ sync.onPurchase = (purchase) => {
   renderShop();
   ui.flashShopCard(purchase.key);
   const item = shopItems(purchase.levels, purchase.coins).find((i) => i.key === purchase.key);
-  ui.showShopMessage(purchase.key === 'home' ? `¡Tu aldea ha crecido! ${item.effect} (solo decorativo).` : `¡${item.name} nivel ${purchase.level}! ${item.effect}.`);
+  ui.showShopMessage(purchase.key.startsWith('skin_')
+    ? `¡${item.name} desbloqueada y equipada!`
+    : purchase.key === 'home'
+      ? `¡Tu aldea ha crecido! ${item.effect} (solo decorativo).`
+      : `¡${item.name} nivel ${purchase.level}! ${item.effect}.`);
   game.audio.playUi(purchase.key === 'home' ? 'village_build' : 'sale_levelup');
 };
 sync.onPurchaseFailed = ({ reason }) => {
@@ -405,6 +459,8 @@ function enterMenu(profile) {
 function applyProgressToGame() {
   ui.coinCounter.set(sync.coins); // Saldo real guardado, sin animación
   game.setAxeLevel(sync.levels.axeLevel); // Hacha del nivel guardado (modelo y daño)
+  selectedSkinId = sync.levels.equippedSkin ?? 'worker';
+  game.setCharacterSkin(selectedSkinId);
   game.setWorkerCount(sync.levels.workers ?? 0); // Trabajadores contratados
   game.setSawmillLevel(sync.levels.sawmillLevel ?? 0); // Etapa visual y producción del aserradero guardados
   game.setClock(sync.gameClock); // Día y hora guardados (Fase 11B)

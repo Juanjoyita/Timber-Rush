@@ -7,13 +7,21 @@
 //         en chopping.js) decide si alcanza a algo.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { PLAYER_RADIUS } from './physics.js';
 import { createAxe } from './axes.js';
-import { ATTACK } from '../config.js';
+import { ATTACK, CHARACTER_SKINS } from '../config.js';
 
 // worker.glb se genera con herramientas/retarget_worker.py (Blender): contiene el Worker
 // con sus animaciones originales Idle/Walk/Run + TreeChopping_Loop adaptada de UAL2.
 const MODEL_URL = '/assets/models/worker.glb';
+const SKIN_URLS = Object.fromEntries(
+  Object.entries(import.meta.glob([
+    '../../recursos-originales/Individual Characters/glTF/*.gltf',
+    '!../../recursos-originales/Individual Characters/glTF/Worker.gltf',
+  ], { eager: true, query: '?url', import: 'default' }))
+    .map(([path, url]) => [path.split('/').pop(), url])
+);
 const ANIMATIONS = {
   idle: 'Idle',
   walk: 'Walk',
@@ -55,10 +63,6 @@ const GRIP_POSE_TIME = 0.17;
 const FOOT_BONES = { L: 'FootL', R: 'FootR' };
 const FOOT_CONTACT_HEIGHT = 0.05; // m: el talón llega al suelo
 const FOOT_REARM_HEIGHT = 0.03; // m extra que el pie debe subir antes de contar otro apoyo
-
-// Piezas de ropa intercambiables (todos los personajes del paquete comparten el esqueleto)
-const OUTFIT_PART_NAME = /_(Head|Body|Legs|Pants|Feet)$/i;
-const OUTFIT_SLOTS = { head: 'head', body: 'body', legs: 'legs', pants: 'legs', feet: 'feet' };
 
 // Teclas por posición física (event.code): funcionan igual en teclados QWERTY y AZERTY
 const KEY_BINDINGS = {
@@ -165,6 +169,7 @@ export class Player {
   constructor(scene) {
     this.scene = scene;
     this.model = null;
+    this.axeLevel = 1;
     this.body = null; // Cuerpo físico (cannon-es)
     this.mixer = null;
     this.actions = {};
@@ -173,9 +178,9 @@ export class Player {
     this.input = { forward: false, backward: false, left: false, right: false, run: false };
     this.yaw = 0; // Orientación visual (el modelo mira hacia +Z con yaw = 0)
 
-    // Ropa: piezas intercambiables que comparten el mismo esqueleto (preparado para una
-    // futura tienda; cambiar una pieza no afecta al hacha, que cuelga de un hueso).
-    this.outfit = { head: null, body: null, legs: null, feet: null };
+    this.characterStates = new Map();
+    this.activeSkin = 'worker';
+    this.pendingSkin = null;
     // Hacha: soporte unido a la mano + modelo actual
     this.axeSocket = null;
     this.axe = null;
@@ -216,16 +221,6 @@ export class Player {
       // animarse podría recortarse por error. Es un solo personaje: se desactiva el recorte.
       if (obj.isSkinnedMesh) obj.frustumCulled = false;
     });
-    // Piezas de ropa por su nombre (Worker_Head, Worker_Body, Worker_Legs, Worker_Feet).
-    // Una pieza con varios materiales se carga como un Group con hijos Worker_Body_1, _2…;
-    // se guarda el nodo completo de la pieza. "Pants" es el nombre que usa el Farmer.
-    this.model.traverse((obj) => {
-      const match = obj.name.match(OUTFIT_PART_NAME);
-      if (!match) return;
-      const part = OUTFIT_SLOTS[match[1].toLowerCase()];
-      if (!this.outfit[part]) this.outfit[part] = obj;
-    });
-
     // AnimationMixer: reproduce los clips de animación sobre el esqueleto del modelo
     this.mixer = new THREE.AnimationMixer(this.model);
     const clips = {};
@@ -237,12 +232,18 @@ export class Player {
     const grip = buildGripClip(clips.chop, Object.values(clips));
     this.mixer.clipAction(grip).play();
     // Para los trabajadores del aserradero (Fase 9): mismo modelo, animación de tala y puño
-    this.gltf = gltf;
+    this.gltf = { ...gltf, scene: cloneSkinned(gltf.scene) };
     this.gripClip = grip;
     this.chopClip = clips.chop;
     for (const [key, clip] of Object.entries(clips)) this.actions[key] = this.mixer.clipAction(clip);
     this.footstepTimes.walk = computeFootstepTimes(this.model, clips.walk);
     this.footstepTimes.run = computeFootstepTimes(this.model, clips.run);
+    this.characterStates.set('worker', {
+      model: this.model,
+      mixer: this.mixer,
+      actions: this.actions,
+      footstepTimes: this.footstepTimes,
+    });
     console.info(`[Timber Rush] Animaciones del personaje: ${gltf.animations.map((c) => c.name).join(', ')}`);
 
     this.attachAxeSocket();
@@ -250,6 +251,11 @@ export class Player {
 
     this.play('idle', 0);
     this.scene.add(this.model);
+    if (this.pendingSkin) {
+      const skin = this.pendingSkin;
+      this.pendingSkin = null;
+      await this.setSkin(skin);
+    }
   }
 
   /** Crea el soporte del hacha como hijo del hueso de la mano: sigue todas las animaciones. */
@@ -259,9 +265,74 @@ export class Player {
 
   /** Coloca en la mano el hacha del nivel indicado (todas comparten el mismo agarre). */
   equipAxe(level) {
+    this.axeLevel = level;
     if (this.axe) this.axeSocket.remove(this.axe);
     this.axe = createAxe(level);
     this.axeSocket.add(this.axe);
+  }
+
+  /** Equipa una apariencia usando su esqueleto propio y las animaciones compatibles del paquete. */
+  async setSkin(id) {
+    if (!this.model) {
+      this.pendingSkin = id;
+      return true;
+    }
+    if (id === this.activeSkin) return true;
+    let state = this.characterStates.get(id);
+    if (!state) {
+      const skin = CHARACTER_SKINS.find((item) => item.id === id);
+      const url = skin && SKIN_URLS[skin.file];
+      if (!url) return false;
+      const gltf = await new GLTFLoader().loadAsync(url);
+      const clips = {};
+      for (const key of ['idle', 'walk', 'run']) {
+        clips[key] = THREE.AnimationClip.findByName(gltf.animations, ANIMATIONS[key]);
+        if (!clips[key]) return false;
+        clips[key].tracks = clips[key].tracks.filter((track) => !RIGHT_HAND_BONES.test(track.name));
+      }
+      gltf.scene.traverse((obj) => {
+        if (!obj.isMesh) return;
+        obj.castShadow = true;
+        obj.receiveShadow = true;
+        if (obj.isSkinnedMesh) obj.frustumCulled = false;
+      });
+      const mixer = new THREE.AnimationMixer(gltf.scene);
+      mixer.clipAction(this.gripClip).play();
+      const actions = Object.fromEntries(Object.entries(clips).map(([key, clip]) => [key, mixer.clipAction(clip)]));
+      actions.chop = mixer.clipAction(this.chopClip);
+      state = {
+        model: gltf.scene,
+        mixer,
+        actions,
+        footstepTimes: {
+          walk: computeFootstepTimes(gltf.scene, clips.walk),
+          run: computeFootstepTimes(gltf.scene, clips.run),
+        },
+      };
+      this.characterStates.set(id, state);
+    }
+
+    const position = this.model.position.clone();
+    const rotation = this.model.rotation.clone();
+    if (this.axeSocket && this.axe) this.axeSocket.remove(this.axe);
+    this.scene.remove(this.model);
+    this.model = state.model;
+    this.model.position.copy(position);
+    this.model.rotation.copy(rotation);
+    this.scene.add(this.model);
+    this.mixer = state.mixer;
+    this.actions = state.actions;
+    this.footstepTimes = state.footstepTimes;
+    this.footstepPrev = { walk: null, run: null };
+    this.currentAction = null;
+    this.mixer.stopAllAction();
+    this.mixer.clipAction(this.gripClip).play();
+    this.attachAxeSocket();
+    this.equipAxe(this.axeLevel ?? 1);
+    this.activeSkin = id;
+    this.play('idle', 0);
+    this.model.updateMatrixWorld(true);
+    return true;
   }
 
   /** Asocia el cuerpo físico y coloca el modelo en su posición. */

@@ -5,7 +5,7 @@
 // - Tienda (Fase 8): ofertas de cada mejora (nivel actual, siguiente, precio y efecto).
 // - Producción de los trabajadores según el nivel del aserradero (ritmo y lotes).
 // Regla: los niveles solo cambian con una compra explícita confirmada (progressSync.buy).
-import { BACKPACK, CHESTS, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
+import { BACKPACK, CHARACTER_SKINS, CHESTS, ECONOMY, FORESTS, SHOP, UPGRADES, WORKERS } from '../config.js';
 import { RESOURCE } from './backpack.js';
 import { AXE_LEVELS } from './axes.js';
 
@@ -119,7 +119,7 @@ export function saleValue(contents, sawmillLevel = 0) {
  * @returns { key, name, level, cost } o null si ya se tiene todo
  */
 /** Mejoras con efecto en el juego (la vivienda es cosmética: no cuenta como «siguiente mejora»). */
-export const FUNCTIONAL_UPGRADES = SHOP.purchasable.filter((k) => !UPGRADES[k].cosmetic);
+export const FUNCTIONAL_UPGRADES = SHOP.purchasable.filter((k) => UPGRADES[k] && !UPGRADES[k].cosmetic);
 
 export function nextUpgrade(levels = {}, keys = FUNCTIONAL_UPGRADES) {
   const current = {
@@ -166,7 +166,10 @@ export function upgradeEffect(key, level, levels = {}) {
  * @returns { column, level, cost } · { maxed: true } si ya está al máximo · null si no se vende
  */
 export function purchaseOffer(key, levels = {}) {
-  if (!SHOP.purchasable.includes(key) || !UPGRADES[key]) return null;
+  if (!SHOP.purchasable.includes(key)) return null;
+  const skin = CHARACTER_SKINS.find(({ id }) => key === `skin_${id}`);
+  if (skin) return levels[key] ? { maxed: true } : { column: key, level: 1, cost: skin.cost };
+  if (!UPGRADES[key]) return null;
   const level = levelOf(key, levels) + 1;
   const cost = UPGRADES[key].costs[level];
   if (cost === undefined) return { maxed: true };
@@ -178,7 +181,7 @@ export function purchaseOffer(key, levels = {}) {
  * Solo información: comprar es progressSync.buy(clave).
  */
 export function shopItems(levels = {}, coins = 0) {
-  return Object.entries(UPGRADES).map(([key, upgrade]) => {
+  const upgrades = Object.entries(UPGRADES).map(([key, upgrade]) => {
     const current = levelOf(key, levels);
     const next = current + 1;
     const cost = upgrade.costs[next];
@@ -199,4 +202,30 @@ export function shopItems(levels = {}, coins = 0) {
       missing: available && !maxed ? Math.max(0, cost - coins) : 0,
     };
   });
+  const skins = [
+    { id: 'worker', name: 'Leñador', owned: true },
+    ...CHARACTER_SKINS.map((skin) => ({ ...skin, owned: Boolean(levels[`skin_${skin.id}`]) })),
+  ].map((skin) => {
+    const key = skin.id === 'worker' ? null : `skin_${skin.id}`;
+    const equipped = levels.equippedSkin === skin.id || (!levels.equippedSkin && skin.id === 'worker');
+    return {
+      key: key ?? 'skin_worker',
+      name: skin.name,
+      level: skin.owned ? 1 : 0,
+      nextLevel: skin.owned ? null : 1,
+      cost: skin.owned ? null : skin.cost,
+      effect: skin.owned ? (equipped ? 'En uso' : 'Apariencia desbloqueada') : 'Apariencia del personaje',
+      nextEffect: null,
+      available: true,
+      cosmetic: true,
+      maxed: skin.owned,
+      affordable: !skin.owned && coins >= skin.cost,
+      missing: !skin.owned ? Math.max(0, skin.cost - coins) : 0,
+      isSkin: true,
+      skinId: skin.id,
+      owned: skin.owned,
+      equipped,
+    };
+  });
+  return [...upgrades, ...skins];
 }

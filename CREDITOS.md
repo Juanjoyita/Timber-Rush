@@ -20,9 +20,11 @@
 - **Fuente:** https://quaternius.com/packs/ultimatemodularcharacters.html
 - **Licencia:** CC0 1.0 (dominio público). Verificada en la página oficial del paquete y en
   https://quaternius.com/faq.html (la descarga no incluye archivo de licencia).
-- **Uso previsto:** `Worker` como personaje base, con sus animaciones Idle, Walk y Run.
-  Los 11 personajes comparten el esqueleto `CharacterArmature`, lo que permite
-  intercambiar piezas de ropa en el futuro.
+- **Uso:** `Worker` como personaje base con sus animaciones Idle, Walk y Run; las piezas de los
+  otros personajes (Adventurer, Beach, Casual 2, Casual Hoodie, Farmer, King, Punk, Spacesuit,
+  Suit y Swat) se ofrecen como apariencias comprables. Los 11 comparten `CharacterArmature`.
+  Las apariencias se cargan desde `recursos-originales/Individual Characters/glTF/` solo al
+  equiparlas; el contenido de origen es CC0 y no se modifica.
 
 ### Universal Animation Library 2 — Standard
 - **Autor:** Quaternius

@@ -70,6 +70,7 @@ export const SYNC_SETTINGS = {
   maxResourcesLength: 1000, // Tamaño de la columna "resources" en Appwrite
 };
 
+import { CHARACTER_SKINS } from './config.js';
 import { isNightAt, parseClock, START_CLOCK } from './game/gameClock.js';
 
 const DEFAULT_RESOURCES = { backpack: {}, storage: {} };
@@ -89,8 +90,17 @@ export function parseChests(raw) {
 const NO_CHESTS = Object.freeze({ d: 0, o: [0, 0, 0, 0, 0], n: 0 });
 
 // Mejoras guardadas DENTRO de resources (sin columna en Appwrite): la vivienda (Fase 11D, 0..6)
-const RESOURCE_LEVELS = { home: 6 };
-const validHome = (v) => v === undefined || (Number.isInteger(v) && v >= 0 && v <= RESOURCE_LEVELS.home);
+const RESOURCE_LEVELS = {
+  home: 6,
+  ...Object.fromEntries(CHARACTER_SKINS.map(({ id }) => [`skin_${id}`, 1])),
+};
+const validResourceLevels = (resources) => Object.entries(RESOURCE_LEVELS).every(([key, max]) => {
+  const value = resources[key];
+  return value === undefined || (Number.isInteger(value) && value >= 0 && value <= max);
+});
+const validEquippedSkin = (resources) => resources.equippedSkin === undefined
+  || resources.equippedSkin === 'worker'
+  || CHARACTER_SKINS.some(({ id }) => id === resources.equippedSkin && resources[`skin_${id}`] === 1);
 /** Progreso de una partida nueva (resources en el mismo formato que el valor por defecto). */
 export const INITIAL_PROGRESS = { resources: { backpack: {}, storage: {} } };
 const isPlainObject = (x) => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -148,6 +158,8 @@ export class ProgressSync {
     this.onSale = () => {}; // (venta confirmada) => void — una sola vez por venta
     this.onSaleFailed = () => {}; // (venta, motivo) => void
     this.onPurchase = () => {}; // (compra confirmada) => void — una sola vez por compra
+    this.onSkinChange = () => {}; // (id) => void — apariencia equipada confirmada
+    this.onSkinChangeFailed = () => {}; // (id, motivo) => void
     this.onPurchaseFailed = () => {}; // (compra, motivo) => void (solo resultados diferidos)
     this.onReset = () => {}; // () => void — nueva partida confirmada (una sola vez)
     this.onResetFailed = () => {}; // (motivo) => void (solo resultados diferidos)
@@ -238,7 +250,7 @@ export class ProgressSync {
     // dañado, se protege como el resto de datos (no se sobrescribe)
     if (resources && resources.clock !== undefined && !parseClock(resources.clock)) damaged = true;
     if (resources && resources.chests !== undefined && !parseChests(resources.chests)) damaged = true; // Cofres (Fase 11C)
-    if (resources && !validHome(resources.home)) damaged = true; // Vivienda (Fase 11D): ausente = 0
+    if (resources && (!validResourceLevels(resources) || !validEquippedSkin(resources))) damaged = true;
 
     this.restoring = true; // Cargar no cuenta como un cambio que haya que guardar
     backpack.setLevel(profile.backpackLevel ?? 1); // Capacidad 20 / 40 / 80
@@ -259,7 +271,9 @@ export class ProgressSync {
       backpackLevel: profile.backpackLevel ?? 1,
       workers: profile.workers ?? 0,
       sawmillLevel: profile.sawmillLevel ?? 0,
-      home: resources && validHome(resources.home) ? resources.home ?? 0 : 0, // Vivienda (cosmética)
+      home: resources?.home ?? 0, // Vivienda (cosmética)
+      ...Object.fromEntries(CHARACTER_SKINS.map(({ id }) => [`skin_${id}`, resources?.[`skin_${id}`] ?? 0])),
+      equippedSkin: resources?.equippedSkin ?? 'worker',
     };
     // Bosques: el desbloqueo depende de las monedas HISTÓRICAS (nunca baja). Si la columna se
     // quedó atrás (perfil anterior a la Fase 11A), cuenta lo que corresponda; se guardará con la
@@ -589,6 +603,11 @@ export class ProgressSync {
     return this.runOperation('purchase', key);
   }
 
+  /** Equipa una apariencia comprada y guarda el cambio en la misma columna de recursos. */
+  equipSkin(id) {
+    return this.runOperation('skin', id);
+  }
+
   // ---------- Nueva partida (Fase 10) ----------
 
   /**
@@ -622,7 +641,10 @@ export class ProgressSync {
     this.coins = 0;
     this.totalCoinsEarned = 0;
     this.totalWood = 0;
-    this.levels = { axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0, home: 0 };
+      this.levels = {
+        axeLevel: 1, backpackLevel: 1, workers: 0, sawmillLevel: 0, home: 0, equippedSkin: 'worker',
+        ...Object.fromEntries(CHARACTER_SKINS.map(({ id }) => [`skin_${id}`, 0])),
+      };
     this.forests = { currentForest: 1, unlockedForests: 1 };
     this.savedForests = { currentForest: 1, unlockedForests: 1 };
     this.base = JSON.parse(data.resources);
@@ -634,6 +656,7 @@ export class ProgressSync {
     this.dirtySince = null;
     this.lazyOnly = false;
     this.onStorageChange(this.storageTotal);
+    this.onSkinChange('worker');
     this.onReset();
   }
 
@@ -712,24 +735,41 @@ export class ProgressSync {
     if (offer.maxed) return { error: 'nivel-máximo' };
     if (this.coins < offer.cost) return { error: 'saldo-insuficiente' };
     // La vivienda se guarda dentro de resources; el resto de mejoras, en su columna
+    const skinId = key.startsWith('skin_') ? key.slice(5) : null;
+    const resourceData = { ...this.base, [offer.column]: offer.level, ...(skinId ? { equippedSkin: skinId } : {}), backpack: this.backpack.toJSON() };
     const data = offer.column in RESOURCE_LEVELS
-      ? { resources: JSON.stringify({ ...this.base, [offer.column]: offer.level, backpack: this.backpack.toJSON() }), totalWoodCollected: this.totalWood, coins: this.coins - offer.cost }
+      ? { resources: JSON.stringify(resourceData), totalWoodCollected: this.totalWood, coins: this.coins - offer.cost }
       : { ...this.snapshot(), coins: this.coins - offer.cost, [offer.column]: offer.level };
-    const op = { kind: 'purchase', id: ++this.saleSeq, key, column: offer.column, level: offer.level, cost: offer.cost, done: false };
+    const op = { kind: 'purchase', id: ++this.saleSeq, key, column: offer.column, level: offer.level, cost: offer.cost, skinId, done: false };
     return { data, op };
+  }
+
+  planSkin(id) {
+    const owned = id === 'worker' || (CHARACTER_SKINS.some((skin) => skin.id === id) && this.levels[`skin_${id}`] === 1);
+    if (!owned) return { error: 'apariencia-no-desbloqueada' };
+    if (this.levels.equippedSkin === id) return { error: 'apariencia-ya-equipada' };
+    const data = { ...this.snapshot(), resources: JSON.stringify({ ...this.base, equippedSkin: id, backpack: this.backpack.toJSON() }) };
+    return { data, op: { kind: 'skin', id: ++this.saleSeq, skinId: id, done: false } };
   }
 
   /** La compra está confirmada: nuevo saldo y nivel en local, y aviso (una sola vez). */
   applyPurchase(op, data) {
     this.coins = data.coins; // totalCoinsEarned no cambia al gastar
-    this.levels = { ...this.levels, [op.column]: op.level };
-    if (op.column in RESOURCE_LEVELS) this.base = { ...this.base, [op.column]: op.level };
+    this.levels = { ...this.levels, [op.column]: op.level, ...(op.skinId ? { equippedSkin: op.skinId } : {}) };
+    if (op.column in RESOURCE_LEVELS) this.base = { ...this.base, [op.column]: op.level, ...(op.skinId ? { equippedSkin: op.skinId } : {}) };
     if (op.column === 'backpackLevel') {
       this.restoring = true; // Ya está guardado: no es un cambio pendiente
       this.backpack.setLevel(op.level);
       this.restoring = false;
     }
     this.onPurchase({ id: op.id, key: op.key, level: op.level, cost: op.cost, coins: this.coins, levels: { ...this.levels } });
+    if (op.skinId) this.onSkinChange(op.skinId);
+  }
+
+  applySkin(op) {
+    this.base = { ...this.base, equippedSkin: op.skinId };
+    this.levels = { ...this.levels, equippedSkin: op.skinId };
+    this.onSkinChange(op.skinId);
   }
 
   /** Prepara la venta: qué se vende, cuánto vale y los datos que quedarán en Appwrite. */
@@ -765,6 +805,10 @@ export class ProgressSync {
     }
     if (op.kind === 'purchase') {
       this.applyPurchase(op, data);
+      return;
+    }
+    if (op.kind === 'skin') {
+      this.applySkin(op);
       return;
     }
     if (op.kind === 'travel') {
@@ -810,6 +854,7 @@ export class ProgressSync {
     if (!deferred) return;
     if (op.kind === 'reset') this.onResetFailed(reason);
     else if (op.kind === 'purchase') this.onPurchaseFailed({ id: op.id, key: op.key, reason });
+    else if (op.kind === 'skin') this.onSkinChangeFailed({ id: op.id, skinId: op.skinId, reason });
     else if (op.kind === 'travel') this.onTravelFailed({ id: op.id, forestId: op.forestId, reason });
     else if (op.kind === 'sleep') this.onSleepFailed({ id: op.id, reason });
     else if (op.kind === 'chest') this.onChestFailed({ id: op.id, forestId: op.forestId, slot: op.slot, reason });
@@ -899,6 +944,13 @@ export class ProgressSync {
           return { ok: false, reason: plan.error, status: this.status };
         }
         ({ data: snapshot, op: sale } = plan);
+      } else if (mode === 'skin') {
+        const plan = this.planSkin(arg);
+        if (plan.error) {
+          this.confirmSaved();
+          return { ok: false, reason: plan.error, status: this.status };
+        }
+        ({ data: snapshot, op: sale } = plan);
       } else {
         if (!this.dirty) return this.confirmSaved(); // La verificación anterior ya lo dejó guardado
         snapshot = this.snapshot();
@@ -911,7 +963,7 @@ export class ProgressSync {
       this.dirty = false;
       this.dirtySince = null;
       this.lazyOnly = false;
-      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…', sleep: 'Durmiendo…', chest: 'Abriendo cofre…' }[sale.kind]) : null);
+      this.setStatus(SAVE_STATUS.SAVING, sale ? ({ purchase: 'Comprando…', skin: 'Equipando apariencia…', sale: 'Vendiendo…', reset: 'Reiniciando…', travel: 'Viajando…', sleep: 'Durmiendo…', chest: 'Abriendo cofre…' }[sale.kind]) : null);
       let newVersion;
       try {
         newVersion = await this.api.save(userId, expected, snapshot);
@@ -944,7 +996,7 @@ export class ProgressSync {
       this.confirmed = pickSaved(snapshot);
       if (sale) {
         this.applySale(sale, snapshot);
-        const info = sale.kind === 'purchase' ? { purchase: { id: sale.id, key: sale.key, level: sale.level } } : sale.kind === 'reset' ? { reset: true } : { sale: { id: sale.id, earned: sale.earned } };
+        const info = sale.kind === 'purchase' ? { purchase: { id: sale.id, key: sale.key, level: sale.level } } : sale.kind === 'skin' ? { skin: sale.skinId } : sale.kind === 'reset' ? { reset: true } : { sale: { id: sale.id, earned: sale.earned } };
         return { ...this.confirmSaved(), ok: true, ...info };
       }
       return this.confirmSaved();

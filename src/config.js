@@ -335,6 +335,20 @@ export const BACKPACK = {
   fullNoticeCooldown: 2.5, // Tiempo mínimo (s) entre avisos de "mochila llena"
 };
 
+// Apariencias del paquete Ultimate Modular Men; el Worker es la apariencia inicial gratuita.
+export const CHARACTER_SKINS = [
+  { id: 'adventurer', name: 'Aventurero', file: 'Adventurer.gltf', cost: 1500 },
+  { id: 'beach', name: 'Playero', file: 'Beach.gltf', cost: 1000 },
+  { id: 'casual', name: 'Casual', file: 'Casual_2.gltf', cost: 750 },
+  { id: 'hoodie', name: 'Sudadera', file: 'Casual_Hoodie.gltf', cost: 900 },
+  { id: 'farmer', name: 'Granjero', file: 'Farmer.gltf', cost: 500 },
+  { id: 'king', name: 'Rey', file: 'King.gltf', cost: 4000 },
+  { id: 'punk', name: 'Punk', file: 'Punk.gltf', cost: 2000 },
+  { id: 'spacesuit', name: 'Traje espacial', file: 'Spacesuit.gltf', cost: 5000 },
+  { id: 'suit', name: 'Traje formal', file: 'Suit.gltf', cost: 2500 },
+  { id: 'swat', name: 'Táctico', file: 'Swat.gltf', cost: 3000 },
+];
+
 // ---------- Economía (Fase 7B: venta) ----------
 // Precios de las mejoras (clave = nivel que se compra). Hacha y mochila: ×3 respecto a los
 // iniciales (50/150 y 100/300) para que comprar sea más difícil (decisión del director,
@@ -361,9 +375,12 @@ export const UPGRADES = {
 // de la fila de progreso se guarda cada mejora. Trabajadores desde la Fase 9.
 export const SHOP = {
   key: 'KeyB',
-  purchasable: ['axe', 'backpack', 'workers', 'sawmill', 'home'],
+  purchasable: ['axe', 'backpack', 'workers', 'sawmill', 'home', ...CHARACTER_SKINS.map(({ id }) => `skin_${id}`)],
   // home se guarda dentro de resources (sin columna nueva en Appwrite)
-  columns: { axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers', home: 'home' },
+  columns: {
+    axe: 'axeLevel', backpack: 'backpackLevel', sawmill: 'sawmillLevel', workers: 'workers', home: 'home',
+    ...Object.fromEntries(CHARACTER_SKINS.map(({ id }) => [`skin_${id}`, `skin_${id}`])),
+  },
 };
 
 export const ECONOMY = {
@@ -437,16 +454,16 @@ export const AUDIO = {
     tree_falling: { file: 'tree_fall.wav', offset: 0.12, duration: 1.4, volume: 0.9, cooldown: 0.5, maxConcurrent: 2 },
     tree_impact: { file: 'tree_fall.wav', offset: 1.58, duration: 1.05, volume: 1.0, cooldown: 0.3, maxConcurrent: 2 },
     // Capa grave del impacto (el tronco pesado golpea la tierra): suena junto a tree_impact
-    // Hachazo de los trabajadores del aserradero: suave y posicional (se oye al acercarse)
-    worker_chop: { files: ['axe_body_0.wav', 'axe_body_1.wav', 'axe_body_2.wav', 'axe_body_3.wav', 'axe_body_4.wav'], volume: 0.3, cooldown: 0.08, maxConcurrent: 2, pitchVariation: 0.1 },
+    // Golpe de trabajadores: se desvanece con la distancia y queda en silencio a 28 m.
+    worker_chop: { files: ['axe_body_0.wav', 'axe_body_1.wav', 'axe_body_2.wav', 'axe_body_3.wav', 'axe_body_4.wav'], volume: 0.07, distanceModel: 'linear', refDistance: 4, maxDistance: 28, rolloffFactor: 1, cooldown: 0.08, maxConcurrent: 2, pitchVariation: 0.1 },
     ground_thud: { files: ['ground_thud_0.wav', 'ground_thud_1.wav', 'ground_thud_2.wav', 'ground_thud_3.wav', 'ground_thud_4.wav'], volume: 0.85, cooldown: 0.3, maxConcurrent: 2, pitchVariation: 0.08 },
     // Pasos del Worker (posicionales, en sus pies): una variante al azar por paso y ligera
     // variación de tono y de volumen (±15 %) para que no suenen repetitivos. Suaves: se oyen
     // sin destacar sobre el resto. Al correr suenan algo más fuertes.
     // Archivos recortados y nivelados con herramientas/procesar_pasos.mjs (Kenney, CC0).
-    step_grass: { files: ['step_grass_0.wav', 'step_grass_1.wav', 'step_grass_2.wav', 'step_grass_3.wav', 'step_grass_4.wav'], volume: 0.12, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.08 },
+    step_grass: { files: ['step_grass_0.wav', 'step_grass_1.wav', 'step_grass_2.wav', 'step_grass_3.wav', 'step_grass_4.wav'], volume: 0.05, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.08 },
     step_grass_run: { files: ['step_grass_0.wav', 'step_grass_1.wav', 'step_grass_2.wav', 'step_grass_3.wav', 'step_grass_4.wav'], volume: 0.2, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.08 },
-    step_wood: { files: ['step_wood_0.wav', 'step_wood_1.wav', 'step_wood_2.wav', 'step_wood_3.wav', 'step_wood_4.wav'], volume: 0.13, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
+    step_wood: { files: ['step_wood_0.wav', 'step_wood_1.wav', 'step_wood_2.wav', 'step_wood_3.wav', 'step_wood_4.wav'], volume: 0.06, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
     step_wood_run: { files: ['step_wood_0.wav', 'step_wood_1.wav', 'step_wood_2.wav', 'step_wood_3.wav', 'step_wood_4.wav'], volume: 0.21, volumeVariation: 0.15, cooldown: 0.12, maxConcurrent: 2, pitchVariation: 0.06 },
     // Venta confirmada (Fase 7B): sonidos de INTERFAZ (sin atenuación por distancia), ya
     // recortados y con la misma sonoridad (herramientas/procesar_audio_venta.mjs). Volúmenes
